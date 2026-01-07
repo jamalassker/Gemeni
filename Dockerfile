@@ -1,0 +1,1 @@
+RUN --mount=type=cache,id=s/1db1c1d9-aa4f-4334-9c5c-4d7521df452d-/root/cache/pip,target=/root/.cache/pip --no-cache python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt
