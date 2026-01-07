@@ -10,6 +10,9 @@ import joblib
 import warnings
 import time
 import sys
+from typing import Optional, List, Dict, Union  # <--- Add this line
+from datetime import datetime, time as dtime, timedelta
+
 import math
 from datetime import datetime, time as dtime, timedelta
 from sklearn.ensemble import GradientBoostingClassifier
@@ -27,7 +30,14 @@ from aiohttp import web
 warnings.filterwarnings('ignore')
 
 # ================= CONFIG =================
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]  # REAL Binance symbols
+SYMBOLS = [
+    "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
+    "ADA/USDT:USDT", "AVAX/USDT:USDT", "DOGE/USDT:USDT", "DOT/USDT:USDT", 
+    "LINK/USDT:USDT", "TRX/USDT:USDT", "POL/USDT:USDT", "LTC/USDT:USDT", 
+    "BCH/USDT:USDT", "1000SHIB/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT", 
+    "SUI/USDT:USDT", "ICP/USDT:USDT", "RENDER/USDT:USDT", "STX/USDT:USDT"
+]
+  # REAL Binance symbols
 TIMEFRAME = "5m"  # Options: 1m, 5m, 15m, 1h, 4h, 1d
 CANDLES_TO_FETCH = 1000  # Get last 1000 candles
 
