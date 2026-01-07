@@ -5,8 +5,7 @@ pandas-ta
 requests
 setuptools
 scikit-learn==1.3.2
-tensorflow==2.14.0
+tensorflow>=2.16.1
 joblib==1.3.2
-requests==2.31.0
 aiohttp==3.9.1
 python-dotenv==1.0.0
