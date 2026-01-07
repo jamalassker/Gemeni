@@ -1,6 +1,6 @@
 ccxt==4.1.66
 pandas==2.2.2
-numpy==2.1.1
+numpy==2.2.6
 pandas-ta==0.4.71b0
 requests
 setuptools
