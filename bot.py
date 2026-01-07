@@ -44,9 +44,9 @@ TAKER_FEE = 0.0010  # 0.10% for taker orders (we'll use this for market orders)
 # Note: If using BNB for fee discount, fees are 0.075%
 
 # ================ TRADING PARAMETERS ================
-INITIAL_BALANCE = 10000.0
+INITIAL_BALANCE = 100
 RISK_PER_TRADE = 0.03  # Reduced to account for fees
-MAX_POSITIONS = 8
+MAX_POSITIONS = 3
 STOP_LOSS_PCT = 0.08   # Adjusted for fees
 TAKE_PROFIT_PCT = 0.12  # Adjusted for fees
 
@@ -66,8 +66,8 @@ LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "lstm_model.h5")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 
 # IMPORTANT: Use environment variables for security
-TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
 
 logging.basicConfig(
     level=logging.INFO,
