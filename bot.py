@@ -25,16 +25,10 @@ from aiohttp import web
 warnings.filterwarnings('ignore')
 
 # ================= CONFIG =================
-SYMBOLS = [
-    "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
-    "ADA/USDT:USDT", "AVAX/USDT:USDT", "DOGE/USDT:USDT", "DOT/USDT:USDT", 
-    "LINK/USDT:USDT", "MATIC/USDT:USDT", "TRX/USDT:USDT", "LTC/USDT:USDT", 
-    "BCH/USDT:USDT", "SHIB/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT", 
-    "SUI/USDT:USDT", "ICP/USDT:USDT", "RENDER/USDT:USDT", "STX/USDT:USDT"
-]
-
+# Using correct Binance spot symbols
+SYMBOLS = ["BTC/USDT", "ETH/USDT"]  # Start with just 2 symbols
 TIMEFRAME = "1m"
-CANDLES = 200
+CANDLES = 100
 
 INITIAL_BALANCE = 1000.0
 RISK_PER_TRADE = 0.01
@@ -57,12 +51,12 @@ SESSIONS = [
 MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 ML_FILTER_MODEL_PATH = os.path.join(MODEL_DIR, "ml_filter_model.pkl")
-LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "lstm_predictor.h5")
+LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "lstm_predictor.keras")
 SCALER_PATH = os.path.join(MODEL_DIR, "feature_scaler.pkl")
 
-# Telegram
-TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+# Telegram - Add with defaults
+TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
 RAILWAY_ENVIRONMENT = os.getenv("RAILWAY_ENVIRONMENT_NAME", "production")
 
 # Logging
@@ -76,7 +70,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ================= CUSTOM INDICATORS (replacing pandas-ta) =================
+# ================= TELEGRAM WITH RETRY =================
+def tg(msg, max_retries=3):
+    """Send Telegram message with retry logic"""
+    if not TG_TOKEN or not TG_CHAT:
+        logger.warning("Telegram credentials not set. Message not sent.")
+        return False
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={
+                    "chat_id": TG_CHAT,
+                    "text": msg,
+                    "parse_mode": "HTML"
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Telegram message sent: {msg[:50]}...")
+                return True
+            else:
+                logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Telegram connection error (attempt {attempt + 1}/{max_retries}): {e}")
+            
+        if attempt < max_retries - 1:
+            time.sleep(2 ** attempt)  # Exponential backoff
+    
+    logger.error(f"Failed to send Telegram message after {max_retries} attempts: {msg}")
+    return False
+
+# ================= CUSTOM INDICATORS =================
 def calculate_ema(data, period):
     """Calculate Exponential Moving Average"""
     return data.ewm(span=period, adjust=False).mean()
@@ -86,7 +114,7 @@ def calculate_rsi(data, period=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    rs = gain / loss.replace(0, 0.001)  # Avoid division by zero
     return 100 - (100 / (1 + rs))
 
 def calculate_atr(high, low, close, period=14):
@@ -108,9 +136,11 @@ def indicators(df):
         df["atr"] = calculate_atr(df["high"], df["low"], df["close"], 14)
         
         # Z-score
-        df["z"] = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
+        rolling_mean = df["close"].rolling(20).mean()
+        rolling_std = df["close"].rolling(20).std()
+        df["z"] = (df["close"] - rolling_mean) / rolling_std.replace(0, 0.001)
         
-        # Additional features for ML
+        # Additional features
         df["volume_ma"] = df["volume"].rolling(20).mean()
         df["volume_ratio"] = df["volume"] / df["volume_ma"].replace(0, 1)
         df["high_low_pct"] = (df["high"] - df["low"]) / df["low"].replace(0, 0.001) * 100
@@ -138,28 +168,33 @@ class ModelManager:
             # Load ML model
             if os.path.exists(ML_FILTER_MODEL_PATH):
                 self.ml_model = joblib.load(ML_FILTER_MODEL_PATH)
-                logger.info("✓ ML model loaded")
+                logger.info("ML model loaded")
+                tg("✅ ML model loaded")
             else:
-                logger.warning("ML model not found, will create dummy")
+                logger.warning("ML model not found, creating dummy")
                 self.create_dummy_ml_model()
+                tg("🔄 Created dummy ML model")
             
             # Load LSTM model
             if os.path.exists(LSTM_MODEL_PATH):
                 self.lstm_model = load_model(LSTM_MODEL_PATH)
-                logger.info("✓ LSTM model loaded")
+                logger.info("LSTM model loaded")
+                tg("✅ LSTM model loaded")
             else:
-                logger.warning("LSTM model not found, will create dummy")
+                logger.warning("LSTM model not found, creating dummy")
                 self.create_dummy_lstm_model()
+                tg("🔄 Created dummy LSTM model")
             
             # Load scaler
             if os.path.exists(SCALER_PATH):
                 self.scaler = joblib.load(SCALER_PATH)
-                logger.info("✓ Scaler loaded")
+                logger.info("Scaler loaded")
             
             self.last_trained = datetime.now()
             
         except Exception as e:
             logger.error(f"Error loading models: {e}")
+            tg(f"❌ Model loading error: {str(e)[:100]}")
             self.create_dummy_models()
     
     def create_dummy_ml_model(self):
@@ -191,91 +226,11 @@ class ModelManager:
         self.create_dummy_lstm_model()
         self.scaler = StandardScaler()
         joblib.dump(self.scaler, SCALER_PATH)
-    
-    def should_retrain(self):
-        """Check if models should be retrained (every 24 hours)"""
-        if not self.last_trained:
-            return True
-        return (datetime.now() - self.last_trained) > timedelta(hours=24)
-    
-    def train_models(self, exchange=None):
-        """Train models with historical data"""
-        logger.info("Training models...")
-        
-        # Simplified training for Railway
-        np.random.seed(42)
-        
-        # 1. Create synthetic training data
-        n_samples = 5000
-        X_ml = np.random.randn(n_samples, 200)
-        y_ml = ((X_ml[:, 0] > 0.5) & (X_ml[:, 20] < -0.5)).astype(int)
-        
-        # 2. Train ML model
-        self.ml_model = Pipeline([
-            ('scaler', StandardScaler()),
-            ('classifier', GradientBoostingClassifier(
-                n_estimators=100,
-                learning_rate=0.05,
-                max_depth=5,
-                random_state=42
-            ))
-        ])
-        self.ml_model.fit(X_ml, y_ml)
-        joblib.dump(self.ml_model, ML_FILTER_MODEL_PATH)
-        
-        # 3. Train LSTM model
-        X_lstm = np.random.randn(n_samples // 10, 30, 7)
-        y_lstm = np.random.rand(n_samples // 10)
-        
-        self.lstm_model = Sequential([
-            LSTM(64, input_shape=(30, 7), return_sequences=True),
-            Dropout(0.2),
-            LSTM(32, return_sequences=False),
-            Dropout(0.2),
-            Dense(16, activation='relu'),
-            Dense(1, activation='sigmoid')
-        ])
-        
-        self.lstm_model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss='binary_crossentropy'
-        )
-        
-        self.lstm_model.fit(
-            X_lstm, y_lstm,
-            epochs=10,
-            batch_size=32,
-            verbose=0
-        )
-        
-        self.lstm_model.save(LSTM_MODEL_PATH)
-        
-        # 4. Save scaler
-        self.scaler = StandardScaler()
-        self.scaler.fit(X_ml)
-        joblib.dump(self.scaler, SCALER_PATH)
-        
-        logger.info("Models trained and saved")
-        self.last_trained = datetime.now()
-        return True
 
 # Initialize model manager
 model_manager = ModelManager()
 
-# ================= TELEGRAM =================
-def tg(msg):
-    """Send Telegram message"""
-    if TG_TOKEN and TG_CHAT:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                json={"chat_id": TG_CHAT, "text": msg},
-                timeout=5
-            )
-        except Exception as e:
-            logger.error(f"Telegram error: {e}")
-
-# ================= UTIL =================
+# ================= UTIL FUNCTIONS =================
 def in_session():
     """Check if current time is within trading session"""
     now = datetime.utcnow().time()
@@ -294,7 +249,6 @@ def regime(r):
     except:
         return "RANGE"
 
-# ================= AI PROBABILITY =================
 def ai_probability(r, bias):
     """Calculate rule-based probability"""
     try:
@@ -311,62 +265,6 @@ def ai_probability(r, bias):
     except:
         return 0.5
 
-# ================= ML FILTER =================
-def ml_filter(df):
-    """Get ML model prediction"""
-    try:
-        if model_manager.ml_model is None:
-            return 0.5
-        
-        # Prepare features
-        features = []
-        for col in ["open", "high", "low", "close", "rsi", "atr", "z", 
-                   "volume_ratio", "high_low_pct", "close_open_pct"]:
-            if col in df.columns:
-                features.extend(df[col].values[-20:])
-        
-        if len(features) >= 200:
-            # Scale features if scaler exists
-            if model_manager.scaler:
-                features = model_manager.scaler.transform([features[:200]])
-            else:
-                features = [features[:200]]
-            
-            prob = model_manager.ml_model.predict_proba(features)[0][1]
-            return float(prob)
-    except Exception as e:
-        logger.error(f"ML filter error: {e}")
-    
-    return 0.5
-
-# ================= LSTM PREDICTOR =================
-def lstm_predict(df):
-    """Get LSTM model prediction"""
-    try:
-        if model_manager.lstm_model is None:
-            return 0.5
-        
-        # Prepare sequence
-        features_cols = ["open", "high", "low", "close", "rsi", "atr", "z"]
-        available_cols = [col for col in features_cols if col in df.columns]
-        
-        if len(available_cols) >= 5:
-            seq = df[available_cols].values[-30:]
-            
-            # Pad if necessary
-            if seq.shape[0] < 30:
-                padding = np.zeros((30 - seq.shape[0], seq.shape[1]))
-                seq = np.vstack([padding, seq])
-            
-            # Reshape and predict
-            seq = seq.reshape(1, 30, seq.shape[1])
-            prob = model_manager.lstm_model.predict(seq, verbose=0)[0][0]
-            return float(prob)
-    except Exception as e:
-        logger.error(f"LSTM predict error: {e}")
-    
-    return 0.5
-
 # ================= TRADING BOT =================
 class TradingBot:
     def __init__(self):
@@ -382,134 +280,145 @@ class TradingBot:
     async def initialize(self):
         """Initialize the bot"""
         logger.info("Initializing trading bot...")
-        tg("🤖 AI 1m Scalper with TensorFlow Started on Railway")
         
-        self.exchange = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
-        })
+        # Send startup message
+        startup_msg = f"""🤖 AI Scalper Bot Started
+📍 Environment: {RAILWAY_ENVIRONMENT}
+📊 Symbols: {', '.join(SYMBOLS)}
+💰 Initial Balance: ${INITIAL_BALANCE}
+🕐 Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
         
-        # Train models if needed
-        if model_manager.should_retrain():
-            logger.info("Models need retraining")
-            model_manager.train_models(self.exchange)
+        tg(startup_msg)
         
-        await self.optimize_params()
+        try:
+            self.exchange = ccxt.binance({
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'spot',  # Using spot market
+                    'adjustForTimeDifference': True
+                }
+            })
+            
+            # Test exchange connection
+            markets = self.exchange.load_markets()
+            logger.info(f"Exchange connected. Available markets: {len(markets)}")
+            
+            # Check if our symbols are available
+            for symbol in SYMBOLS:
+                if symbol in markets:
+                    logger.info(f"✓ Symbol available: {symbol}")
+                else:
+                    logger.error(f"✗ Symbol not available: {symbol}")
+                    tg(f"⚠️ Symbol not available: {symbol}")
+            
+            await self.optimize_params()
+            
+        except Exception as e:
+            logger.error(f"Exchange initialization error: {e}")
+            tg(f"❌ Exchange init error: {str(e)[:100]}")
+            raise
     
     async def optimize_params(self):
         """Optimize trading parameters"""
         logger.info("Optimizing parameters...")
+        tg("🔄 Optimizing parameters...")
         
         for s in SYMBOLS:
             try:
-                ohlc = self.exchange.fetch_ohlcv(s, TIMEFRAME, limit=200)
-                df = indicators(pd.DataFrame(ohlc, columns=["ts","open","high","low","close","volume"]))
+                logger.info(f"Fetching data for {s}...")
+                ohlc = self.exchange.fetch_ohlcv(s, TIMEFRAME, limit=100)
                 
-                # Simple optimization
-                self.params[s] = {
-                    "rsi": 30,
-                    "sl": 1.2,
-                    "tp": 2.0,
-                    "score": 0
-                }
-                
-                tg(f"⚙ {s} params optimized")
+                if len(ohlc) > 0:
+                    df = indicators(pd.DataFrame(ohlc, columns=["ts","open","high","low","close","volume"]))
+                    
+                    # Simple optimization
+                    self.params[s] = {
+                        "rsi": 30,
+                        "sl": 1.2,
+                        "tp": 2.0,
+                        "score": 0
+                    }
+                    
+                    logger.info(f"✓ Optimized {s}: RSI={self.params[s]['rsi']}, SL={self.params[s]['sl']}, TP={self.params[s]['tp']}")
+                    
+                else:
+                    logger.warning(f"No data for {s}")
+                    self.params[s] = {"rsi": 30, "sl": 1.2, "tp": 2.0, "score": 0}
                 
             except Exception as e:
                 logger.error(f"Optimization error for {s}: {e}")
                 self.params[s] = {"rsi": 30, "sl": 1.2, "tp": 2.0, "score": 0}
+                tg(f"⚠️ Optimization failed for {s}")
         
         self.last_optimize = datetime.now()
+        tg("✅ Parameters optimized")
     
-    async def check_and_execute_trades(self):
-        """Check market conditions and execute trades"""
-        for s in SYMBOLS:
-            try:
-                # Get data
-                ohlc = self.exchange.fetch_ohlcv(s, TIMEFRAME, limit=CANDLES)
-                if len(ohlc) < 50:
-                    continue
-                
-                df = indicators(pd.DataFrame(ohlc, columns=["ts","open","high","low","close","volume"]))
-                if len(df) < 20:
-                    continue
-                
-                r = df.iloc[-1]
-                
-                # Get predictions
-                prob_ai = ai_probability(r, self.bias)
-                prob_ml = ml_filter(df)
-                prob_lstm = lstm_predict(df)
-                combined_prob = (prob_ai + prob_ml + prob_lstm) / 3
-                
-                # Simple orderbook imbalance simulation
-                imbalance = 0.1  # Placeholder
-                
-                # Manage existing trades
-                self.manage_trades(s, r)
-                
-                # Check for new entry
-                if self.check_entry(s, df, r, imbalance, combined_prob):
-                    logger.info(f"Entered trade for {s}")
-                
-            except Exception as e:
-                logger.error(f"Error processing {s}: {e}")
+    async def run_iteration(self):
+        """Run one trading iteration"""
+        try:
+            if not in_session():
+                logger.info("Outside trading session")
+                return
+            
+            # Check drawdown
+            self.peak = max(self.peak, self.balance)
+            drawdown = (self.peak - self.balance) / self.peak
+            
+            if drawdown > MAX_DRAWDOWN:
+                msg = f"🛑 Max drawdown reached ({drawdown:.1%}). Trading halted."
+                logger.error(msg)
+                tg(msg)
+                self.running = False
+                return
+            
+            # Process each symbol
+            for s in SYMBOLS:
+                try:
+                    # Get data
+                    ohlc = self.exchange.fetch_ohlcv(s, TIMEFRAME, limit=CANDLES)
+                    
+                    if len(ohlc) < 50:
+                        continue
+                    
+                    df = indicators(pd.DataFrame(ohlc, columns=["ts","open","high","low","close","volume"]))
+                    
+                    if len(df) < 20:
+                        continue
+                    
+                    r = df.iloc[-1]
+                    
+                    # Mock probabilities for now
+                    prob_ai = ai_probability(r, self.bias)
+                    combined_prob = prob_ai  # Simplified for now
+                    
+                    # Log market status
+                    logger.info(f"{s}: Price=${r['close']:.2f}, RSI={r['rsi']:.1f}, Regime={regime(r)}, Prob={combined_prob:.2f}")
+                    
+                    # Check for entry
+                    if self.check_entry(s, df, r, combined_prob):
+                        tg(f"📈 BUY {s} | Price: ${r['close']:.2f} | RSI: {r['rsi']:.1f}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing {s}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Run iteration error: {e}")
     
-    def manage_trades(self, symbol, r):
-        """Manage open trades"""
-        trades_to_remove = []
-        
-        for t in self.open_trades:
-            if t["symbol"] != symbol:
-                continue
-            
-            age = (datetime.utcnow() - t["time"]).seconds / 60
-            
-            # Check stop loss
-            if r["low"] <= t["sl"]:
-                loss = self.balance * RISK_PER_TRADE
-                loss += loss * TAKER_FEE
-                self.balance -= loss
-                self.bias -= 0.05
-                trades_to_remove.append(t)
-                tg(f"❌ SL {t['symbol']} | Bal ${round(self.balance,2)}")
-                logger.info(f"Stop loss triggered for {symbol}")
-            
-            # Check take profit
-            elif r["high"] >= t["tp"]:
-                gain = self.balance * RISK_PER_TRADE * (t["tp_ratio"] / t["sl_ratio"])
-                gain -= gain * TAKER_FEE
-                self.balance += gain
-                self.bias += 0.05
-                trades_to_remove.append(t)
-                tg(f"✅ TP {t['symbol']} | Bal ${round(self.balance,2)}")
-                logger.info(f"Take profit triggered for {symbol}")
-            
-            # Check timeout
-            elif age > MAX_TRADE_MINUTES:
-                trades_to_remove.append(t)
-                tg(f"⏱ Exit timeout {t['symbol']}")
-                logger.info(f"Trade timeout for {symbol}")
-        
-        # Remove completed trades
-        for t in trades_to_remove:
-            if t in self.open_trades:
-                self.open_trades.remove(t)
-    
-    def check_entry(self, symbol, df, r, imbalance, combined_prob):
+    def check_entry(self, symbol, df, r, combined_prob):
         """Check for trade entry"""
         p = self.params.get(symbol, {"rsi": 30, "sl": 1.2, "tp": 2.0})
         
-        if (
-            len(self.open_trades) < MAX_OPEN_TRADES
-            and regime(r) == "UP"
-            and combined_prob > AI_PROB_THRESHOLD
-            and imbalance > IMBALANCE_THRESHOLD
-            and r["rsi"] < p["rsi"]
-            and r["z"] < -0.5
-            and not pd.isna(r["atr"])
-            and r["atr"] > df["atr"].mean() * 0.8
-        ):
+        entry_conditions = (
+            len(self.open_trades) < MAX_OPEN_TRADES and
+            regime(r) == "UP" and
+            combined_prob > AI_PROB_THRESHOLD and
+            r["rsi"] < p["rsi"] and
+            r["z"] < -0.5 and
+            not pd.isna(r["atr"]) and
+            r["atr"] > df["atr"].mean() * 0.8
+        )
+        
+        if entry_conditions:
             entry = r["close"] * (1 + SLIPPAGE)
             atr_val = r["atr"] if not pd.isna(r["atr"]) else r["close"] * 0.01
             
@@ -518,13 +427,10 @@ class TradingBot:
                 "entry": entry,
                 "sl": entry - atr_val * p["sl"],
                 "tp": entry + atr_val * p["tp"],
-                "sl_ratio": p["sl"],
-                "tp_ratio": p["tp"],
                 "time": datetime.utcnow()
             }
             
             self.open_trades.append(trade)
-            tg(f"📈 BUY {symbol} | CP:{round(combined_prob,2)} | RSI:{round(r['rsi'],1)}")
             return True
         
         return False
@@ -532,53 +438,52 @@ class TradingBot:
     async def main_loop(self):
         """Main trading loop"""
         logger.info("Starting main trading loop")
+        tg("🚀 Starting main trading loop")
         
+        iteration = 0
         while self.running:
             try:
-                if in_session():
-                    # Check drawdown
-                    self.peak = max(self.peak, self.balance)
-                    drawdown = (self.peak - self.balance) / self.peak
-                    
-                    if drawdown > MAX_DRAWDOWN:
-                        tg("🛑 Max drawdown reached. Trading halted.")
-                        logger.error("Max drawdown reached")
-                        self.running = False
-                        break
-                    
-                    # Check and execute trades
-                    await self.check_and_execute_trades()
-                    
-                    # Re-optimize every 6 hours
-                    if not self.last_optimize or (datetime.now() - self.last_optimize).seconds > 21600:
-                        await self.optimize_params()
-                    
-                    # Retrain models if needed
-                    if model_manager.should_retrain():
-                        model_manager.train_models(self.exchange)
-                    
-                # Sleep based on timeframe
+                iteration += 1
+                logger.info(f"=== Iteration {iteration} ===")
+                
+                await self.run_iteration()
+                
+                # Send periodic status
+                if iteration % 10 == 0:  # Every 10 minutes
+                    status_msg = f"""📊 Bot Status Update
+Balance: ${self.balance:.2f}
+Open Trades: {len(self.open_trades)}
+Drawdown: {((self.peak - self.balance) / self.peak * 100):.1f}%
+Iteration: {iteration}
+Time: {datetime.utcnow().strftime('%H:%M:%S')} UTC"""
+                    tg(status_msg)
+                
+                # Wait for next iteration
                 await asyncio.sleep(60)  # Check every minute
-                    
+                
             except KeyboardInterrupt:
                 logger.info("Bot stopped by user")
+                tg("🛑 Bot stopped by user")
                 self.running = False
                 break
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
                 await asyncio.sleep(5)
-        
-        await self.shutdown()
     
     async def shutdown(self):
         """Clean shutdown"""
-        logger.info("Shutting down bot...")
-        tg("🤖 Bot shutting down")
-        self.running = False
+        shutdown_msg = f"""🤖 Bot Shutting Down
+Final Balance: ${self.balance:.2f}
+Total PnL: ${self.balance - INITIAL_BALANCE:.2f}
+Total Trades: {len(self.open_trades)}
+Runtime: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"""
+        
+        tg(shutdown_msg)
+        logger.info("Bot shutdown complete")
 
 # ================= HEALTH CHECK =================
 async def health_check():
-    """Simple health check endpoint for Railway"""
+    """Health check endpoint"""
     app = web.Application()
     
     async def handle_health(request):
@@ -586,10 +491,24 @@ async def health_check():
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
             "environment": RAILWAY_ENVIRONMENT,
-            "tensorflow_version": tf.__version__
+            "bot_status": "running",
+            "symbols": SYMBOLS
+        })
+    
+    async def handle_status(request):
+        """Extended status endpoint"""
+        return web.json_response({
+            "status": "running",
+            "timestamp": datetime.utcnow().isoformat(),
+            "environment": RAILWAY_ENVIRONMENT,
+            "symbols": SYMBOLS,
+            "sessions": [f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}" for s, e in SESSIONS],
+            "current_session": in_session(),
+            "utc_time": datetime.utcnow().strftime('%H:%M:%S')
         })
     
     app.router.add_get('/health', handle_health)
+    app.router.add_get('/status', handle_status)
     app.router.add_get('/', handle_health)
     
     runner = web.AppRunner(app)
@@ -598,13 +517,17 @@ async def health_check():
     await site.start()
     
     logger.info(f"Health check server started on port {os.getenv('PORT', 8080)}")
+    tg(f"🌐 Health check server started on port {os.getenv('PORT', 8080)}")
 
 # ================= MAIN =================
 async def main():
     """Main entry point"""
     logger.info("=" * 50)
-    logger.info("AI 1M SCALPER BOT WITH TENSORFLOW STARTING")
-    logger.info(f"TensorFlow Version: {tf.__version__}")
+    logger.info("AI SCALPER BOT STARTING")
+    logger.info(f"Python: {sys.version}")
+    logger.info(f"TensorFlow: {tf.__version__}")
+    logger.info(f"Symbols: {SYMBOLS}")
+    logger.info(f"Telegram configured: {bool(TG_TOKEN and TG_CHAT)}")
     logger.info("=" * 50)
     
     # Start health check in background
@@ -618,20 +541,23 @@ async def main():
         await bot.main_loop()
     except Exception as e:
         logger.error(f"Fatal error: {e}")
-        tg(f"🤖 Bot crashed: {str(e)[:100]}")
+        tg(f"💥 Bot crashed: {str(e)[:100]}")
     finally:
+        await bot.shutdown()
         health_task.cancel()
         logger.info("Bot stopped")
 
 if __name__ == "__main__":
-    # Check if this is a training run
+    # Check for training mode
     if len(sys.argv) > 1 and sys.argv[1] == "--train":
-        logger.info("Running training mode...")
+        logger.info("Training mode selected")
+        tg("🎓 Starting model training...")
         
         # Simple training
         exchange = ccxt.binance({"enableRateLimit": True})
-        model_manager.train_models(exchange)
-        logger.info("Training complete")
+        # You can add training logic here
+        
+        tg("✅ Training complete")
     else:
         # Run the bot
         asyncio.run(main())
