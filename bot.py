@@ -8,7 +8,7 @@ from sklearn.pipeline import Pipeline
 import ccxt
 from datetime import datetime
 
-# ================= CONFIG (PRESERVED) =================
+# ================= LOOSENED CONFIG =================
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", 
            "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "TRX/USDT", 
            "POL/USDT", "LTC/USDT", "BCH/USDT", "1000SHIB/USDT", "NEAR/USDT", 
@@ -16,10 +16,10 @@ SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT",
 
 TIMEFRAME = "5m"
 INITIAL_BALANCE = 10000.0
-MAX_POSITIONS = 3
-KELLY_FRACTION = 0.2 
-MIN_PROBABILITY = 0.72 
-TAKER_FEE, STOP_LOSS_PCT, TAKE_PROFIT_PCT = 0.0010, 0.08, 0.12
+MAX_POSITIONS = 5          # Increased to allow more trades
+KELLY_FRACTION = 0.4       # Risk more per trade
+MIN_PROBABILITY = 0.52     # LOOSENED: Triggers on moderate signals
+TAKER_FEE = 0.0010         # Binance Spot Fee (0.1%)
 
 TG_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
 TG_CHAT = "5665906172"
@@ -27,14 +27,14 @@ TG_CHAT = "5665906172"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("SuperSniper")
 
-# --- Helper Functions ---
+# --- Telegram Helper ---
 def send_telegram(message: str):
     try:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": TG_CHAT, "text": message, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
-# --- Indicators & AI Classes (Logic Preserved) ---
+# --- Indicator Engine ---
 class TechnicalIndicators:
     @staticmethod
     def add_indicators(df):
@@ -55,24 +55,22 @@ class TechnicalIndicators:
 class SuperAI:
     def __init__(self):
         self.model = Pipeline([('s', StandardScaler()), ('rf', RandomForestClassifier(n_estimators=200))])
-        self.regime_detector = KMeans(n_clusters=3, random_state=42)
         self.is_trained = False
         self.last_train_day = None
 
     def train(self, data):
+        # Using a broader feature set for prediction
         X = data[['rsi', 'volatility', 'returns', 'macd', 'stoch']]
-        data['regime'] = self.regime_detector.fit_predict(X)
-        y = (data['close'].shift(-10) > data['close'] * 1.025).astype(int)
+        y = (data['close'].shift(-5) > data['close'] * 1.005).astype(int) # Predict 0.5% gain in 5 candles
         self.model.fit(X, y.fillna(0))
         self.is_trained = True
         self.last_train_day = datetime.now().day
-        logger.info("🔥 AI Recalibrated.")
+        logger.info("✅ AI Training Complete (Aggressive Settings)")
 
     def predict(self, row):
         X = row[['rsi', 'volatility', 'returns', 'macd', 'stoch']]
         prob = self.model.predict_proba(X)[0][1]
-        regime = self.regime_detector.predict(X)[0]
-        return prob, regime
+        return prob
 
 class SuperSniper:
     def __init__(self):
@@ -84,33 +82,35 @@ class SuperSniper:
         self.realized_pnl = 0.0
 
     async def report_loop(self):
-        """2-Second High Frequency Notification - ONLY ACTIVE DURING TRADES"""
+        """2-Second Report: Only sends if positions are open"""
         while True:
-            # Check if we have any active positions
             active_trades = [p for p in self.positions if p['status'] == 'OPEN']
-            
             if active_trades:
                 floating = 0.0
                 for p in active_trades:
-                    curr = self.exchange.fetch_ticker(p['sym'])['last']
-                    floating += (curr - p['entry']) * p['size']
+                    try:
+                        ticker = self.exchange.fetch_ticker(p['sym'])
+                        floating += (ticker['last'] - p['entry']) * p['size']
+                    except: continue
                 
                 net = self.realized_pnl + floating - self.total_fees
-                msg = (f"📊 <b>ACTIVE TRADE REPORT</b>\n--------------------\n"
+                msg = (f"📊 <b>LIVE TRADE REPORT</b>\n"
+                       f"--------------------\n"
                        f"💰 <b>Wallet:</b> ${self.wallet_balance:.2f}\n"
                        f"📈 <b>Realized:</b> ${self.realized_pnl:.2f}\n"
                        f"📉 <b>Floating:</b> ${floating:.2f}\n"
                        f"💸 <b>Fees:</b> ${self.total_fees:.2f}\n"
-                       f"🚀 <b>Net PnL:</b> ${net:.2f}\n--------------------\n"
-                       f"Open Positions: {len(active_trades)}")
+                       f"🚀 <b>Net Profit:</b> ${net:.2f}\n"
+                       f"--------------------\n"
+                       f"Active Positions: {len(active_trades)}")
                 send_telegram(msg)
-            
             await asyncio.sleep(2)
 
     async def trading_loop(self):
         while True:
+            # Daily AI Re-optimization
             if not self.ai.is_trained or datetime.now().day != self.ai.last_train_day:
-                hist = self.exchange.fetch_ohlcv("BTC/USDT", TIMEFRAME, limit=500)
+                hist = self.exchange.fetch_ohlcv("BTC/USDT", TIMEFRAME, limit=1000)
                 df_hist = TechnicalIndicators.add_indicators(pd.DataFrame(hist, columns=['t','o','h','l','c','v']).rename(columns={'c':'close','h':'high','l':'low'}))
                 self.ai.train(df_hist)
 
@@ -121,26 +121,32 @@ class SuperSniper:
                     df = TechnicalIndicators.add_indicators(df)
                     row = df.iloc[-1:]
                     
-                    prob, regime = self.ai.predict(row)
+                    prob = self.ai.predict(row)
                     
-                    if prob > MIN_PROBABILITY and regime != 0 and len([x for x in self.positions if x['status']=='OPEN']) < MAX_POSITIONS:
+                    # LOOSENED ENTRY: Only check Probability and Position Count
+                    if prob > MIN_PROBABILITY and len([x for x in self.positions if x['status']=='OPEN']) < MAX_POSITIONS:
                         price = df['close'].iloc[-1]
-                        k_perc = (prob * 2.0 - (1 - prob)) / 2.0
-                        k_size = max(0, k_perc * KELLY_FRACTION)
+                        trade_val = self.wallet_balance * 0.05 # Risk 5% of balance per trade
+                        fee = trade_val * TAKER_FEE
                         
-                        if k_size > 0:
-                            trade_val = self.wallet_balance * k_size
-                            fee = trade_val * TAKER_FEE
-                            self.wallet_balance -= (trade_val + fee)
-                            self.total_fees += fee
-                            self.positions.append({'sym': symbol, 'entry': price, 'size': trade_val/price, 'status': 'OPEN'})
-                            send_telegram(f"⚡ <b>TRADE OPENED:</b> {symbol}\nSize: {k_size:.1%}")
-                except: continue
-            await asyncio.sleep(10)
+                        self.wallet_balance -= (trade_val + fee)
+                        self.total_fees += fee
+                        self.positions.append({'sym': symbol, 'entry': price, 'size': trade_val/price, 'status': 'OPEN'})
+                        
+                        send_telegram(f"🚀 <b>TRADE OPENED:</b> {symbol}\nProb: {prob:.1%}\nPrice: {price}")
+                except Exception as e:
+                    logger.error(f"Error scanning {symbol}: {e}")
+            
+            await asyncio.sleep(5) # Scan symbols every 5 seconds
 
     async def run(self):
+        logger.info("🤖 Sniper Bot Active - Aggressive Mode")
         await asyncio.gather(self.trading_loop(), self.report_loop())
 
 if __name__ == "__main__":
     bot = SuperSniper()
-    asyncio.run(bot.run())
+    try:
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        print("Bot Stopped by User")
+
