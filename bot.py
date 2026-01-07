@@ -9,7 +9,7 @@ import joblib
 import warnings
 import time
 import sys
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Tuple
 from datetime import datetime, time as dtime, timedelta
 from sklearn.model_selection import train_test_split
 import math
@@ -36,19 +36,19 @@ SYMBOLS = [
     "SUI/USDT", "ICP/USDT", "RENDER/USDT", "STX/USDT"
 ]
 TIMEFRAME = "5m"
-CANDLES_TO_FETCH = 500  # Reduced for faster processing
+CANDLES_TO_FETCH = 100
 
 # LOOSENED TRADING PARAMETERS
-INITIAL_BALANCE = 10000.0
-RISK_PER_TRADE = 0.05  # Increased from 2% to 5%
-MAX_POSITIONS = 10  # Increased from 3 to 10
-STOP_LOSS_PCT = 0.10  # Loosened from 3% to 10%
-TAKE_PROFIT_PCT = 0.15  # Loosened from 6% to 15%
+INITIAL_BALANCE = 10
+RISK_PER_TRADE = 0.05
+MAX_POSITIONS = 1
+STOP_LOSS_PCT = 0.10
+TAKE_PROFIT_PCT = 0.15
 
 # LOOSENED THRESHOLDS
-ML_PROB_THRESHOLD = 0.45  # Lowered significantly
+ML_PROB_THRESHOLD = 0.45
 LSTM_PROB_THRESHOLD = 0.45
-COMBINED_THRESHOLD = 0.40  # Very low threshold to trigger more trades
+COMBINED_THRESHOLD = 0.40
 
 MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -96,7 +96,6 @@ class MarketDataFetcher:
     
     def __init__(self):
         try:
-            # Binance public endpoints don't require API keys for data fetching
             self.exchange = ccxt.binance({
                 'enableRateLimit': True,
                 'timeout': 30000,
@@ -115,7 +114,6 @@ class MarketDataFetcher:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info(f"📊 Fetching REAL data for {symbol} ({timeframe})...")
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
                 if not ohlcv:
                     logger.warning(f"No data returned for {symbol}")
@@ -175,7 +173,7 @@ class TechnicalIndicators:
             df['macd_signal'] = df['macd'].ewm(span=9).mean()
             df['macd_hist'] = df['macd'] - df['macd_signal']
             
-            # RSI (simplified calculation)
+            # RSI
             delta = pd.Series(close).diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -196,7 +194,6 @@ class TechnicalIndicators:
             
             # Price returns
             df['returns'] = pd.Series(close).pct_change()
-            df['log_returns'] = np.log(pd.Series(close) / pd.Series(close).shift(1))
             
             # ATR
             high_low = high - low
@@ -213,7 +210,6 @@ class TechnicalIndicators:
             
             # Simple trend indicator
             df['price_change_5'] = df['close'].pct_change(5)
-            df['volume_change_5'] = df['volume'].pct_change(5)
             
             # Remove infinite values and fill NaN
             df = df.replace([np.inf, -np.inf], np.nan)
@@ -236,9 +232,8 @@ class AIModels:
     def load_or_train_models(self):
         """Load existing models or train new ones"""
         try:
-            # Train simple models that are more likely to generate signals
+            # Train simple models
             self.train_simple_ml_model()
-            self.train_simple_lstm_model()
             send_telegram("✅ AI Models trained successfully")
         except Exception as e:
             logger.error(f"Error with models: {e}")
@@ -247,17 +242,12 @@ class AIModels:
     def train_simple_ml_model(self):
         """Train a simple ML model that tends to give positive signals"""
         np.random.seed(42)
-        n_samples = 5000
+        n_samples = 2000
         
-        # Create features with a bias towards positive predictions
-        X = np.random.randn(n_samples, 15)
+        # Create 10 features (matching what we'll use)
+        X = np.random.randn(n_samples, 10)
         # Bias the training data to predict more buys
-        y = (X[:, 0] > -0.5).astype(int)  # Simple threshold favoring buys
-        y = y | (X[:, 1] > -0.3).astype(int)  # Additional buy condition
-        
-        # Add some randomness
-        mask = np.random.rand(n_samples) > 0.2  # 80% keep, 20% flip
-        y = np.where(mask, y, 1 - y)
+        y = (X[:, 0] > -0.5).astype(int)
         
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
@@ -278,55 +268,6 @@ class AIModels:
         
         accuracy = self.ml_model.score(X_test, y_test)
         logger.info(f"Simple ML Model trained. Accuracy: {accuracy:.2%}")
-        logger.info(f"Positive rate in test: {y_test.mean():.2%}")
-    
-    def train_simple_lstm_model(self):
-        """Train a simple LSTM model biased towards buys"""
-        np.random.seed(42)
-        n_sequences = 2000
-        sequence_length = 20
-        n_features = 8
-        
-        # Create sequences with upward bias
-        X = np.random.randn(n_sequences, sequence_length, n_features)
-        y = np.ones(n_sequences) * 0.7  # 70% bias towards buy
-        
-        # Add some variation
-        for i in range(n_sequences):
-            # Add upward trend bias
-            trend_bias = np.random.uniform(0.5, 0.9)
-            X[i, :, 0] += np.linspace(0, trend_bias, sequence_length)
-            # Randomize some labels
-            if np.random.rand() < 0.3:
-                y[i] = np.random.uniform(0.2, 0.5)
-        
-        y = np.clip(y + np.random.randn(n_sequences) * 0.1, 0, 1)
-        
-        # Simple LSTM
-        self.lstm_model = Sequential([
-            LSTM(32, input_shape=(sequence_length, n_features), return_sequences=False),
-            Dropout(0.1),
-            Dense(16, activation='relu'),
-            Dense(1, activation='sigmoid')
-        ])
-        
-        self.lstm_model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss='binary_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        # Quick training
-        self.lstm_model.fit(
-            X, y,
-            epochs=5,
-            batch_size=32,
-            validation_split=0.2,
-            verbose=0
-        )
-        
-        self.lstm_model.save(LSTM_MODEL_PATH)
-        logger.info("Simple LSTM Model trained and saved")
     
     def predict_ml(self, features: np.ndarray) -> float:
         """Predict using ML model"""
@@ -343,22 +284,6 @@ class AIModels:
         except Exception as e:
             logger.error(f"ML prediction error: {e}")
             return 0.6  # Default bullish
-    
-    def predict_lstm(self, sequence: np.ndarray) -> float:
-        """Predict using LSTM model"""
-        if self.lstm_model is None:
-            return 0.6  # Default to slightly bullish
-        
-        try:
-            if len(sequence.shape) == 2:
-                sequence = sequence.reshape(1, sequence.shape[0], sequence.shape[1])
-            prob = self.lstm_model.predict(sequence, verbose=0)[0][0]
-            # Add small random boost
-            prob = min(0.9, prob + np.random.uniform(0.0, 0.05))
-            return float(prob)
-        except Exception as e:
-            logger.error(f"LSTM prediction error: {e}")
-            return 0.6  # Default bullish
 
 # ================= TRADING BOT =================
 class TradingBot:
@@ -371,6 +296,8 @@ class TradingBot:
         self.trade_history = []
         self.equity_curve = []
         self.last_trade_time = {}
+        self.last_pnl_update = datetime.now()
+        self.pnl_update_interval = 2  # seconds
         
         logger.info("=" * 60)
         logger.info("🤖 AGGRESSIVE AI TRADING BOT INITIALIZED")
@@ -378,6 +305,7 @@ class TradingBot:
         logger.info(f"💰 Initial Balance: ${INITIAL_BALANCE:,.2f}")
         logger.info(f"🎯 Max Positions: {MAX_POSITIONS}")
         logger.info(f"⚡ Risk per Trade: {RISK_PER_TRADE*100:.1f}%")
+        logger.info(f"📊 P/L Updates: Every {self.pnl_update_interval} seconds")
         logger.info("=" * 60)
         
         startup_msg = f"""🚀 AGGRESSIVE TRADING BOT STARTED
@@ -386,8 +314,63 @@ class TradingBot:
 📈 Trading {len(SYMBOLS)} symbols
 ⚡ Max Positions: {MAX_POSITIONS}
 🎯 Risk/Trade: {RISK_PER_TRADE*100:.1f}%
+📊 P/L Updates: Every {self.pnl_update_interval} seconds
 🕐 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
         send_telegram(startup_msg)
+    
+    async def update_floating_pnl(self):
+        """Update and send floating P/L for all open positions"""
+        try:
+            current_time = datetime.now()
+            if (current_time - self.last_pnl_update).seconds >= self.pnl_update_interval:
+                if self.positions:
+                    total_floating_pnl = 0
+                    pnl_details = []
+                    
+                    for pos in self.positions:
+                        if pos['status'] == "OPEN":
+                            current_price = self.market_data.fetch_current_price(pos['symbol'])
+                            if current_price:
+                                floating_pnl = (current_price - pos['entry_price']) * pos['size']
+                                pnl_pct = (current_price / pos['entry_price'] - 1) * 100
+                                total_floating_pnl += floating_pnl
+                                
+                                # Update position with current P/L
+                                pos['current_price'] = current_price
+                                pos['floating_pnl'] = floating_pnl
+                                pos['floating_pnl_pct'] = pnl_pct
+                                
+                                pnl_details.append(
+                                    f"{pos['symbol']}: ${floating_pnl:+.2f} ({pnl_pct:+.1f}%)"
+                                )
+                    
+                    if pnl_details:
+                        total_pnl_pct = (total_floating_pnl / sum(p['value'] for p in self.positions)) * 100
+                        
+                        pnl_message = f"""📊 FLOATING P/L UPDATE
+Total: ${total_floating_pnl:+.2f} ({total_pnl_pct:+.1f}%)
+Open Positions: {len(self.positions)}
+
+{' | '.join(pnl_details[:5])}"""
+                        
+                        if len(pnl_details) > 5:
+                            pnl_message += f"\n... and {len(pnl_details) - 5} more"
+                        
+                        # Send update to Telegram
+                        send_telegram(pnl_message)
+                        
+                        logger.info(f"📊 Floating P/L: ${total_floating_pnl:+.2f}")
+                
+                self.last_pnl_update = current_time
+                
+        except Exception as e:
+            logger.error(f"Error updating floating P/L: {e}")
+    
+    def get_position_pnl(self, position: Dict, current_price: float) -> Tuple[float, float]:
+        """Calculate P/L for a position"""
+        pnl = (current_price - position['entry_price']) * position['size']
+        pnl_pct = (current_price / position['entry_price'] - 1) * 100
+        return pnl, pnl_pct
     
     def analyze_symbol(self, symbol: str) -> Dict:
         """Analyze a symbol and potentially open a trade"""
@@ -400,7 +383,6 @@ class TradingBot:
             # Fetch data
             df = self.market_data.fetch_ohlcv(symbol, limit=100)
             if len(df) < 30:
-                logger.warning(f"Not enough data for {symbol}: {len(df)} candles")
                 return {"symbol": symbol, "signal": "HOLD", "confidence": 0}
             
             # Calculate indicators
@@ -411,9 +393,9 @@ class TradingBot:
             latest = df.iloc[-1]
             current_price = latest['close']
             
-            # Prepare features for ML model
+            # Prepare features for ML model (10 features to match training)
             feature_cols = ['rsi', 'macd', 'macd_hist', 'bb_position', 'volume_ratio', 
-                          'returns', 'atr', 'stoch_k', 'price_change_5', 'volume_change_5']
+                          'returns', 'atr', 'stoch_k', 'price_change_5', 'sma_20']
             
             features = []
             for col in feature_cols:
@@ -422,41 +404,26 @@ class TradingBot:
                 else:
                     features.append(0.0)
             
-            features = np.array(features).reshape(1, -1)
+            # Ensure we have exactly 10 features
+            features = np.array(features[:10]).reshape(1, -1)
             
-            # Get predictions (biased towards buys)
+            # Get predictions
             ml_prob = self.ai_models.predict_ml(features)
             
-            # Simple LSTM sequence
-            sequence_cols = ['close', 'volume', 'rsi', 'macd']
-            sequence_data = []
-            for col in sequence_cols:
-                if col in df.columns:
-                    col_data = df[col].values[-20:] if len(df) >= 20 else df[col].values
-                    if len(col_data) < 20:
-                        col_data = np.pad(col_data, (20 - len(col_data), 0), 'edge')
-                    sequence_data.append(col_data)
-            
-            if len(sequence_data) >= 2:
-                sequence = np.column_stack(sequence_data)
-                lstm_prob = self.ai_models.predict_lstm(sequence)
-            else:
-                lstm_prob = 0.6
-            
-            # Combined probability (weighted average)
-            combined_prob = (ml_prob * 0.6 + lstm_prob * 0.4)
+            # Combined probability
+            combined_prob = ml_prob  # Simplified since LSTM is removed
             
             # VERY LOOSE BUY CONDITIONS
             signal = "HOLD"
             
             # Check if we should open a position
-            if (combined_prob > COMBINED_THRESHOLD and  # Very low threshold
+            if (combined_prob > COMBINED_THRESHOLD and
                 open_positions < MAX_POSITIONS and
-                self.balance > INITIAL_BALANCE * 0.1):  # Still have some balance
+                self.balance > INITIAL_BALANCE * 0.1):
                 
-                # Check cooldown for this symbol (prevent rapid re-entries)
+                # Check cooldown for this symbol
                 last_trade = self.last_trade_time.get(symbol)
-                if last_trade and (datetime.now() - last_trade).seconds < 300:  # 5 min cooldown
+                if last_trade and (datetime.now() - last_trade).seconds < 300:
                     return {"symbol": symbol, "signal": "HOLD", "confidence": combined_prob}
                 
                 # Calculate position size
@@ -474,7 +441,10 @@ class TradingBot:
                     "size": position_value / entry_price,
                     "value": position_value,
                     "status": "OPEN",
-                    "confidence": combined_prob
+                    "confidence": combined_prob,
+                    "current_price": entry_price,
+                    "floating_pnl": 0.0,
+                    "floating_pnl_pct": 0.0
                 }
                 
                 self.positions.append(position)
@@ -513,50 +483,20 @@ Open Positions: {open_positions + 1}/{MAX_POSITIONS}"""
             if pos['symbol'] != symbol or pos['status'] != "OPEN":
                 continue
             
+            # Update current price and floating P/L
+            pos['current_price'] = current_price
+            pnl, pnl_pct = self.get_position_pnl(pos, current_price)
+            pos['floating_pnl'] = pnl
+            pos['floating_pnl_pct'] = pnl_pct
+            
             # Check stop loss
             if current_price <= pos['stop_loss']:
-                pl = (current_price - pos['entry_price']) * pos['size']
-                self.balance += pos['value'] + pl
-                pos['status'] = "CLOSED"
-                pos['exit_price'] = current_price
-                pos['exit_time'] = datetime.now()
-                pos['pnl'] = pl
-                pos['pnl_pct'] = (current_price / pos['entry_price'] - 1) * 100
-                self.trade_history.append(pos)
-                
-                logger.info(f"🛑 STOP LOSS {symbol} @ ${current_price:.2f} | P/L: ${pl:.2f}")
-                
-                sl_msg = f"""🛑 STOP LOSS HIT
-Symbol: {symbol}
-Entry: ${pos['entry_price']:.2f}
-Exit: ${current_price:.2f}
-P/L: ${pl:.2f} ({pos['pnl_pct']:.1f}%)
-Balance: ${self.balance:,.2f}"""
-                send_telegram(sl_msg)
-                
+                self.close_position(pos, current_price, "STOP_LOSS")
                 positions_to_remove.append(pos)
             
             # Check take profit
             elif current_price >= pos['take_profit']:
-                pl = (current_price - pos['entry_price']) * pos['size']
-                self.balance += pos['value'] + pl
-                pos['status'] = "CLOSED"
-                pos['exit_price'] = current_price
-                pos['exit_time'] = datetime.now()
-                pos['pnl'] = pl
-                pos['pnl_pct'] = (current_price / pos['entry_price'] - 1) * 100
-                self.trade_history.append(pos)
-                
-                logger.info(f"🏁 TAKE PROFIT {symbol} @ ${current_price:.2f} | P/L: ${pl:.2f}")
-                
-                tp_msg = f"""🏁 TAKE PROFIT HIT
-Symbol: {symbol}
-Entry: ${pos['entry_price']:.2f}
-Exit: ${current_price:.2f}
-P/L: ${pl:.2f} ({pos['pnl_pct']:.1f}%)
-Balance: ${self.balance:,.2f}"""
-                send_telegram(tp_msg)
-                
+                self.close_position(pos, current_price, "TAKE_PROFIT")
                 positions_to_remove.append(pos)
         
         # Remove closed positions
@@ -564,14 +504,113 @@ Balance: ${self.balance:,.2f}"""
             if pos in self.positions:
                 self.positions.remove(pos)
     
+    def close_position(self, position: Dict, exit_price: float, reason: str):
+        """Close a position and send notification"""
+        pnl, pnl_pct = self.get_position_pnl(position, exit_price)
+        self.balance += position['value'] + pnl
+        
+        position['status'] = "CLOSED"
+        position['exit_price'] = exit_price
+        position['exit_time'] = datetime.now()
+        position['pnl'] = pnl
+        position['pnl_pct'] = pnl_pct
+        position['exit_reason'] = reason
+        
+        self.trade_history.append(position.copy())
+        
+        # Determine emoji based on P/L
+        if pnl > 0:
+            emoji = "💰"
+            result = "PROFIT"
+        elif pnl < 0:
+            emoji = "📉"
+            result = "LOSS"
+        else:
+            emoji = "⚖️"
+            result = "BREAK EVEN"
+        
+        logger.info(f"{emoji} {reason} {position['symbol']} @ ${exit_price:.2f} | P/L: ${pnl:+.2f}")
+        
+        # Format duration
+        duration = position['exit_time'] - position['entry_time']
+        hours, remainder = divmod(duration.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        close_msg = f"""{emoji} TRADE CLOSED - {result}
+Symbol: {position['symbol']}
+Entry: ${position['entry_price']:.2f}
+Exit: ${exit_price:.2f} ({reason})
+P/L: ${pnl:+.2f} ({pnl_pct:+.1f}%)
+Size: {position['size']:.6f} {position['symbol'].split('/')[0]}
+Duration: {hours}h {minutes}m {seconds}s
+Balance: ${self.balance:,.2f}
+Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}/{MAX_POSITIONS}"""
+        
+        send_telegram(close_msg)
+    
+    async def send_daily_summary(self):
+        """Send daily trading summary"""
+        while True:
+            try:
+                # Send summary at 23:55 daily
+                now = datetime.now()
+                if now.hour == 23 and now.minute == 55:
+                    total_trades = len(self.trade_history)
+                    if total_trades > 0:
+                        winning_trades = len([t for t in self.trade_history 
+                                            if t.get('pnl', 0) > 0])
+                        losing_trades = total_trades - winning_trades
+                        win_rate = winning_trades / total_trades * 100
+                        
+                        total_pnl = sum(t.get('pnl', 0) for t in self.trade_history)
+                        avg_win = np.mean([t.get('pnl', 0) for t in self.trade_history 
+                                          if t.get('pnl', 0) > 0]) if winning_trades > 0 else 0
+                        avg_loss = np.mean([t.get('pnl', 0) for t in self.trade_history 
+                                           if t.get('pnl', 0) < 0]) if losing_trades > 0 else 0
+                        
+                        # Calculate best and worst trade
+                        trades_with_pnl = [(t['symbol'], t.get('pnl', 0), t.get('pnl_pct', 0)) 
+                                         for t in self.trade_history]
+                        if trades_with_pnl:
+                            best_trade = max(trades_with_pnl, key=lambda x: x[1])
+                            worst_trade = min(trades_with_pnl, key=lambda x: x[1])
+                        
+                        summary = f"""📈 DAILY TRADING SUMMARY
+Date: {now.strftime('%Y-%m-%d')}
+Total Trades: {total_trades}
+Win Rate: {win_rate:.1f}% ({winning_trades}W/{losing_trades}L)
+Total P/L: ${total_pnl:+.2f}
+Average Win: ${avg_win:+.2f}
+Average Loss: ${avg_loss:+.2f}
+Best Trade: {best_trade[0]} (${best_trade[1]:+.2f}, {best_trade[2]:+.1f}%)
+Worst Trade: {worst_trade[0]} (${worst_trade[1]:+.2f}, {worst_trade[2]:+.1f}%)
+Current Balance: ${self.balance:,.2f}
+Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}"""
+                        
+                        send_telegram(summary)
+                        logger.info(f"📈 Daily summary sent")
+                
+                # Wait for 1 minute before checking again
+                await asyncio.sleep(60)
+                
+            except Exception as e:
+                logger.error(f"Error in daily summary: {e}")
+                await asyncio.sleep(60)
+    
     async def run(self):
         """Main trading loop"""
         iteration = 0
+        
+        # Start daily summary task
+        asyncio.create_task(self.send_daily_summary())
         
         while True:
             try:
                 iteration += 1
                 logger.info(f"🔄 Iteration {iteration} | Balance: ${self.balance:,.2f} | Open positions: {len(self.positions)}")
+                
+                # Update floating P/L
+                await self.update_floating_pnl()
                 
                 # Analyze all symbols
                 for symbol in SYMBOLS:
@@ -583,22 +622,30 @@ Balance: ${self.balance:,.2f}"""
                     except Exception as e:
                         logger.error(f"Error processing {symbol}: {e}")
                 
-                # Log summary every 5 iterations
-                if iteration % 5 == 0:
+                # Log summary every 10 iterations
+                if iteration % 10 == 0:
                     total_trades = len(self.trade_history)
                     if total_trades > 0:
                         winning_trades = len([t for t in self.trade_history if t.get('pnl', 0) > 0])
                         win_rate = winning_trades / total_trades * 100
                         total_pnl = sum(t.get('pnl', 0) for t in self.trade_history)
                         
+                        # Calculate current floating P/L
+                        current_floating_pnl = 0
+                        for pos in self.positions:
+                            if pos['status'] == "OPEN":
+                                current_price = self.market_data.fetch_current_price(pos['symbol'])
+                                if current_price:
+                                    current_floating_pnl += (current_price - pos['entry_price']) * pos['size']
+                        
                         summary = f"""📊 TRADING SUMMARY
 Total Trades: {total_trades}
 Win Rate: {win_rate:.1f}%
-Total P/L: ${total_pnl:,.2f}
+Total Realized P/L: ${total_pnl:+,.2f}
+Current Floating P/L: ${current_floating_pnl:+,.2f}
 Current Balance: ${self.balance:,.2f}
 Open Positions: {len(self.positions)}"""
                         logger.info(summary)
-                        send_telegram(summary)
                 
                 # Wait for next cycle
                 logger.info(f"⏳ Sleeping for 60 seconds...")
@@ -617,7 +664,7 @@ async def start_webserver():
     """Start a simple web server for health checks"""
     app = web.Application()
     app.router.add_get('/health', handle_health)
-    app.router.add_get('/', handle_health)  # Root also returns OK
+    app.router.add_get('/', handle_health)
     
     runner = web.AppRunner(app)
     await runner.setup()
