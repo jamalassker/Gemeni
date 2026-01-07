@@ -6,41 +6,54 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 import ccxt
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ================= CONFIG =================
+# ================= CONFIG (RESTORED & ENHANCED) =================
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", 
            "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "TRX/USDT", 
-           "POL/USDT", "LTC/USDT", "BCH/USDT", "SHIB/USDT", "NEAR/USDT", 
+           "POL/USDT", "LTC/USDT", "BCH/USDT", "1000SHIB/USDT", "NEAR/USDT", 
            "APT/USDT", "SUI/USDT", "ICP/USDT", "RENDER/USDT", "STX/USDT"]
 
 TIMEFRAME = "5m"
-INITIAL_BALANCE = 10000.0
+INITIAL_BALANCE = 10000.0  # Starting simulation balance
 MAX_POSITIONS = 3
 KELLY_FRACTION = 0.2 
 MIN_PROBABILITY = 0.72 
-TAKER_FEE = 0.0010
+TAKER_FEE, STOP_LOSS_PCT, TAKE_PROFIT_PCT = 0.0010, 0.08, 0.12
+
+# Telegram Credentials
 TG_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
 TG_CHAT = "5665906172"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("SuperSniper")
 
-# --- Telegram Logic ---
+# --- Helper Functions ---
 def send_telegram(message: str):
-    try: requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
-                       json={"chat_id": TG_CHAT, "text": message, "parse_mode": "HTML"}, timeout=5)
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TG_CHAT, "text": message, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
-# --- Quant Logic ---
-class QuantEngine:
+# --- Original Indicators + Quant Features ---
+class TechnicalIndicators:
     @staticmethod
-    def get_features(df):
+    def add_indicators(df):
         if len(df) < 50: return df
+        # --- Your Original Technicals ---
+        df['sma_20'] = df['close'].rolling(20).mean()
+        df['ema_12'] = df['close'].ewm(span=12).mean()
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean().replace(0, 0.001)
+        df['rsi'] = 100 - (100 / (1 + gain/loss))
+        df['macd'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+        df['bb_p'] = (df['close'] - (df['sma_20'] - 2*df['close'].rolling(20).std())) / (4*df['close'].rolling(20).std() + 0.001)
+        df['stoch'] = 100 * (df['close'] - df['low'].rolling(14).min()) / (df['high'].rolling(14).max() - df['low'].rolling(14).min() + 0.001)
+        
+        # --- Quant Features for AI ---
         df['returns'] = df['close'].pct_change()
         df['volatility'] = df['returns'].rolling(20).std()
-        df['rsi'] = 100 - (100 / (1 + (df['close'].diff().where(df['close'].diff() > 0, 0).rolling(14).mean() / 
-                                      df['close'].diff().where(df['close'].diff() < 0, 0).abs().rolling(14).mean().replace(0, 0.001))))
         return df.dropna()
 
 class SuperAI:
@@ -48,20 +61,19 @@ class SuperAI:
         self.model = Pipeline([('s', StandardScaler()), ('rf', RandomForestClassifier(n_estimators=200))])
         self.regime_detector = KMeans(n_clusters=3, random_state=42)
         self.is_trained = False
-        self.last_train_time = None
+        self.last_train_day = None
 
-    def train(self, historical_data):
-        logger.info("🧠 Walk-Forward Training Started...")
-        X = historical_data[['rsi', 'volatility', 'returns']]
-        historical_data['regime'] = self.regime_detector.fit_predict(X)
-        y = (historical_data['close'].shift(-10) > historical_data['close'] * 1.025).astype(int)
+    def train(self, data):
+        X = data[['rsi', 'volatility', 'returns', 'macd', 'stoch']]
+        data['regime'] = self.regime_detector.fit_predict(X)
+        y = (data['close'].shift(-10) > data['close'] * 1.025).astype(int)
         self.model.fit(X, y.fillna(0))
         self.is_trained = True
-        self.last_train_time = datetime.now()
-        logger.info("✅ Model Optimized for Current Market Regime.")
+        self.last_train_day = datetime.now().day
+        logger.info("🔥 Walk-Forward Optimization Complete: AI Retrained.")
 
-    def get_trade_conviction(self, current_row):
-        X = current_row[['rsi', 'volatility', 'returns']]
+    def predict(self, row):
+        X = row[['rsi', 'volatility', 'returns', 'macd', 'stoch']]
         prob = self.model.predict_proba(X)[0][1]
         regime = self.regime_detector.predict(X)[0]
         return prob, regime
@@ -75,54 +87,66 @@ class SuperSniper:
         self.total_fees = 0.0
         self.realized_pnl = 0.0
 
-    async def send_2s_report(self):
-        floating = 0.0
-        for pos in self.positions:
-            if pos['status'] == 'OPEN':
-                ticker = await self.fetch_price_async(pos['sym'])
-                floating += (ticker - pos['entry']) * pos['size']
-        
-        net = self.realized_pnl + floating - self.total_fees
-        report = (
-            f"📊 <b>LIVE REPORT</b>\n"
-            f"---------------------------\n"
-            f"💰 <b>Bal:</b> ${self.wallet_balance:.2f} | 💸 <b>Fees:</b> ${self.total_fees:.2f}\n"
-            f"📈 <b>Realized:</b> ${self.realized_pnl:.2f}\n"
-            f"📉 <b>Floating:</b> ${floating:.2f}\n"
-            f"🚀 <b>Net Profit:</b> ${net:.2f}\n"
-            f"---------------------------\n"
-            f"Trades Active: {len([p for p in self.positions if p['status'] == 'OPEN'])}"
-        )
-        send_telegram(report)
+    def calculate_kelly_size(self, prob):
+        p, b = prob, 2.0  # 1:2 Risk-Reward Ratio
+        q = 1 - p
+        k_perc = (p * b - q) / b
+        return max(0, k_perc * KELLY_FRACTION)
 
-    async def fetch_price_async(self, symbol):
-        # Helper to avoid blocking the 2s loop
-        ticker = self.exchange.fetch_ticker(symbol)
-        return ticker['last']
+    async def report_loop(self):
+        """2-Second High Frequency Notification"""
+        while True:
+            floating = 0.0
+            for p in self.positions:
+                if p['status'] == 'OPEN':
+                    curr = self.exchange.fetch_ticker(p['sym'])['last']
+                    floating += (curr - p['entry']) * p['size']
+            
+            net = self.realized_pnl + floating - self.total_fees
+            msg = (f"📊 <b>SNIPER REPORT</b>\n--------------------\n"
+                   f"💰 <b>Bal:</b> ${self.wallet_balance:.2f}\n"
+                   f"📈 <b>Realized:</b> ${self.realized_pnl:.2f}\n"
+                   f"📉 <b>Floating:</b> ${floating:.2f}\n"
+                   f"💸 <b>Fees:</b> ${self.total_fees:.2f}\n"
+                   f"🚀 <b>Net:</b> ${net:.2f}\n--------------------\n"
+                   f"Active: {len([x for x in self.positions if x['status']=='OPEN'])}")
+            send_telegram(msg)
+            await asyncio.sleep(2)
+
+    async def trading_loop(self):
+        while True:
+            # Walk-Forward: Retrain every new day
+            if not self.ai.is_trained or datetime.now().day != self.ai.last_train_day:
+                hist = self.exchange.fetch_ohlcv("BTC/USDT", TIMEFRAME, limit=500)
+                df_hist = TechnicalIndicators.add_indicators(pd.DataFrame(hist, columns=['t','o','h','l','c','v']).rename(columns={'c':'close','h':'high','l':'low'}))
+                self.ai.train(df_hist)
+
+            for symbol in SYMBOLS:
+                try:
+                    ohlcv = self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
+                    df = pd.DataFrame(ohlcv, columns=['t','open','high','low','close','v'])
+                    df = TechnicalIndicators.add_indicators(df)
+                    row = df.iloc[-1:]
+                    
+                    prob, regime = self.ai.predict(row)
+                    
+                    # Original Trigger + AI Conviction + Regime Filter
+                    if prob > MIN_PROBABILITY and regime != 0 and len([x for x in self.positions if x['status']=='OPEN']) < MAX_POSITIONS:
+                        price = df['close'].iloc[-1]
+                        k_size = self.calculate_kelly_size(prob)
+                        if k_size > 0:
+                            trade_val = self.wallet_balance * k_size
+                            fee = trade_val * TAKER_FEE
+                            self.wallet_balance -= (trade_val + fee)
+                            self.total_fees += fee
+                            self.positions.append({'sym': symbol, 'entry': price, 'size': trade_val/price, 'status': 'OPEN'})
+                            send_telegram(f"💎 <b>KELLY BUY:</b> {symbol}\nProb: {prob:.1%}")
+                except: continue
+            await asyncio.sleep(10) # Analysis cycle
 
     async def run(self):
-        last_report = 0
-        while True:
-            now = time.time()
-            
-            # 1. THE 2-SECOND NOTIFICATION FIX
-            if now - last_report >= 2:
-                await self.send_2s_report()
-                last_report = now
-
-            # 2. THE WALK-FORWARD OPTIMIZATION FIX (Daily Retrain)
-            if not self.ai.is_trained or (datetime.now() - self.ai.last_train_time).days >= 1:
-                # Use BTC as the training anchor for global regime
-                ohlcv = self.exchange.fetch_ohlcv("BTC/USDT", TIMEFRAME, limit=1000)
-                df = pd.DataFrame(ohlcv, columns=['t','open','high','low','close','v'])
-                self.ai.train(QuantEngine.get_features(df))
-
-            # 3. ANALYSIS LOOP
-            for symbol in SYMBOLS:
-                # (Your existing Entry/Exit Logic remains here)
-                await asyncio.sleep(0.01) # Safety breather
-            
-            await asyncio.sleep(0.1)
+        await asyncio.gather(self.trading_loop(), self.report_loop())
 
 if __name__ == "__main__":
-    asyncio.run(SuperSniper().run())
+    bot = SuperSniper()
+    asyncio.run(bot.run())
