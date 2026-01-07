@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import requests
@@ -38,12 +37,22 @@ SYMBOLS = [
 TIMEFRAME = "5m"
 CANDLES_TO_FETCH = 100
 
-# LOOSENED TRADING PARAMETERS
-INITIAL_BALANCE = 10
-RISK_PER_TRADE = 0.05
-MAX_POSITIONS = 1
-STOP_LOSS_PCT = 0.10
-TAKE_PROFIT_PCT = 0.15
+# ================ REAL BINANCE FEES ================
+# Binance Spot Trading Fees (VIP 0 - regular user)
+MAKER_FEE = 0.0010  # 0.10% for maker orders
+TAKER_FEE = 0.0010  # 0.10% for taker orders (we'll use this for market orders)
+# Note: If using BNB for fee discount, fees are 0.075%
+
+# ================ TRADING PARAMETERS ================
+INITIAL_BALANCE = 10000.0
+RISK_PER_TRADE = 0.03  # Reduced to account for fees
+MAX_POSITIONS = 8
+STOP_LOSS_PCT = 0.08   # Adjusted for fees
+TAKE_PROFIT_PCT = 0.12  # Adjusted for fees
+
+# Minimum trade amounts (Binance requirements)
+MIN_TRADE_USDT = 10  # Minimum $10 per trade
+MIN_TRADE_CRYPTO = 0.001  # Minimum crypto amount varies, but we'll use this as baseline
 
 # LOOSENED THRESHOLDS
 ML_PROB_THRESHOLD = 0.45
@@ -57,8 +66,8 @@ LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "lstm_model.h5")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 
 # IMPORTANT: Use environment variables for security
-TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
+TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,6 +150,35 @@ class MarketDataFetcher:
             return ticker['last']
         except Exception as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
+            return None
+    
+    def get_market_info(self, symbol: str) -> Optional[Dict]:
+        """Get market info including precision and limits"""
+        try:
+            market = self.exchange.market(symbol)
+            return {
+                'symbol': symbol,
+                'precision': {
+                    'price': market['precision']['price'],
+                    'amount': market['precision']['amount']
+                },
+                'limits': {
+                    'amount': {
+                        'min': market['limits']['amount']['min'],
+                        'max': market['limits']['amount']['max']
+                    },
+                    'cost': {
+                        'min': market['limits']['cost']['min'],
+                        'max': market['limits']['cost']['max']
+                    },
+                    'price': {
+                        'min': market['limits']['price']['min'],
+                        'max': market['limits']['price']['max']
+                    }
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting market info for {symbol}: {e}")
             return None
 
 # ================= TECHNICAL INDICATORS =================
@@ -285,7 +323,7 @@ class AIModels:
             logger.error(f"ML prediction error: {e}")
             return 0.6  # Default bullish
 
-# ================= TRADING BOT =================
+# ================= TRADING BOT WITH REAL FEES =================
 class TradingBot:
     def __init__(self):
         self.market_data = MarketDataFetcher()
@@ -298,19 +336,22 @@ class TradingBot:
         self.last_trade_time = {}
         self.last_pnl_update = datetime.now()
         self.pnl_update_interval = 2  # seconds
+        self.total_fees_paid = 0.0
         
         logger.info("=" * 60)
-        logger.info("🤖 AGGRESSIVE AI TRADING BOT INITIALIZED")
+        logger.info("🤖 REALISTIC AI TRADING BOT INITIALIZED")
         logger.info(f"📈 Symbols: {len(SYMBOLS)}")
         logger.info(f"💰 Initial Balance: ${INITIAL_BALANCE:,.2f}")
+        logger.info(f"💸 Binance Fees: {TAKER_FEE*100:.2f}% taker")
         logger.info(f"🎯 Max Positions: {MAX_POSITIONS}")
         logger.info(f"⚡ Risk per Trade: {RISK_PER_TRADE*100:.1f}%")
         logger.info(f"📊 P/L Updates: Every {self.pnl_update_interval} seconds")
         logger.info("=" * 60)
         
-        startup_msg = f"""🚀 AGGRESSIVE TRADING BOT STARTED
+        startup_msg = f"""🚀 REALISTIC TRADING BOT STARTED
 📊 Using REAL Binance Data
 💰 Paper Balance: ${INITIAL_BALANCE:,.2f}
+💸 Trading Fees: {TAKER_FEE*100:.2f}% per trade
 📈 Trading {len(SYMBOLS)} symbols
 ⚡ Max Positions: {MAX_POSITIONS}
 🎯 Risk/Trade: {RISK_PER_TRADE*100:.1f}%
@@ -318,37 +359,112 @@ class TradingBot:
 🕐 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
         send_telegram(startup_msg)
     
+    def calculate_entry_fee(self, trade_value: float) -> float:
+        """Calculate entry fee for a trade (taker fee)"""
+        return trade_value * TAKER_FEE
+    
+    def calculate_exit_fee(self, trade_value: float) -> float:
+        """Calculate exit fee for a trade (taker fee)"""
+        return trade_value * TAKER_FEE
+    
+    def adjust_for_fees(self, entry_price: float, position_size: float) -> Tuple[float, float, float]:
+        """
+        Adjust trade parameters to account for fees
+        Returns: (adjusted_entry_cost, entry_fee, total_entry_cost)
+        """
+        # Calculate trade value
+        trade_value = entry_price * position_size
+        
+        # Calculate entry fee
+        entry_fee = self.calculate_entry_fee(trade_value)
+        
+        # Total cost including fees
+        total_entry_cost = trade_value + entry_fee
+        
+        return trade_value, entry_fee, total_entry_cost
+    
+    def calculate_break_even_price(self, entry_price: float) -> float:
+        """Calculate price needed to break even including fees"""
+        # Need to cover both entry and exit fees
+        total_fee_pct = TAKER_FEE * 2  # Entry + Exit
+        return entry_price * (1 + total_fee_pct)
+    
+    def calculate_real_pnl(self, position: Dict, exit_price: float) -> Tuple[float, float, float, float]:
+        """
+        Calculate real P/L including fees
+        Returns: (gross_pnl, total_fees, net_pnl, net_pnl_pct)
+        """
+        # Gross P/L
+        gross_pnl = (exit_price - position['entry_price']) * position['size']
+        
+        # Calculate fees
+        entry_fee = position.get('entry_fee', 0)
+        exit_trade_value = exit_price * position['size']
+        exit_fee = self.calculate_exit_fee(exit_trade_value)
+        total_fees = entry_fee + exit_fee
+        
+        # Net P/L
+        net_pnl = gross_pnl - total_fees
+        
+        # Calculate percentages
+        investment = position['entry_price'] * position['size']
+        net_pnl_pct = (net_pnl / investment) * 100
+        
+        return gross_pnl, total_fees, net_pnl, net_pnl_pct
+    
     async def update_floating_pnl(self):
-        """Update and send floating P/L for all open positions"""
+        """Update and send floating P/L for all open positions INCLUDING FEES"""
         try:
             current_time = datetime.now()
             if (current_time - self.last_pnl_update).seconds >= self.pnl_update_interval:
                 if self.positions:
-                    total_floating_pnl = 0
+                    total_gross_pnl = 0
+                    total_estimated_fees = 0
+                    total_net_pnl = 0
                     pnl_details = []
                     
                     for pos in self.positions:
                         if pos['status'] == "OPEN":
                             current_price = self.market_data.fetch_current_price(pos['symbol'])
                             if current_price:
-                                floating_pnl = (current_price - pos['entry_price']) * pos['size']
-                                pnl_pct = (current_price / pos['entry_price'] - 1) * 100
-                                total_floating_pnl += floating_pnl
+                                # Calculate gross P/L
+                                gross_pnl = (current_price - pos['entry_price']) * pos['size']
                                 
-                                # Update position with current P/L
+                                # Calculate estimated fees (entry already paid + estimated exit)
+                                entry_fee = pos.get('entry_fee', 0)
+                                exit_trade_value = current_price * pos['size']
+                                estimated_exit_fee = self.calculate_exit_fee(exit_trade_value)
+                                total_fees = entry_fee + estimated_exit_fee
+                                
+                                # Net P/L
+                                net_pnl = gross_pnl - total_fees
+                                net_pnl_pct = (net_pnl / (pos['entry_price'] * pos['size'])) * 100
+                                
+                                # Update position
                                 pos['current_price'] = current_price
-                                pos['floating_pnl'] = floating_pnl
-                                pos['floating_pnl_pct'] = pnl_pct
+                                pos['floating_pnl'] = net_pnl
+                                pos['floating_pnl_pct'] = net_pnl_pct
+                                pos['estimated_exit_fee'] = estimated_exit_fee
                                 
+                                # Accumulate totals
+                                total_gross_pnl += gross_pnl
+                                total_estimated_fees += total_fees
+                                total_net_pnl += net_pnl
+                                
+                                # Add to details
+                                emoji = "📈" if net_pnl > 0 else "📉" if net_pnl < 0 else "⚖️"
                                 pnl_details.append(
-                                    f"{pos['symbol']}: ${floating_pnl:+.2f} ({pnl_pct:+.1f}%)"
+                                    f"{emoji} {pos['symbol']}: ${net_pnl:+.2f} ({net_pnl_pct:+.1f}%)"
                                 )
                     
                     if pnl_details:
-                        total_pnl_pct = (total_floating_pnl / sum(p['value'] for p in self.positions)) * 100
+                        total_investment = sum(p['entry_price'] * p['size'] for p in self.positions)
+                        total_net_pnl_pct = (total_net_pnl / total_investment * 100) if total_investment > 0 else 0
                         
-                        pnl_message = f"""📊 FLOATING P/L UPDATE
-Total: ${total_floating_pnl:+.2f} ({total_pnl_pct:+.1f}%)
+                        pnl_message = f"""📊 REAL-TIME P/L (INCL. FEES)
+Gross P/L: ${total_gross_pnl:+.2f}
+Est. Total Fees: ${total_estimated_fees:+.2f}
+Net P/L: ${total_net_pnl:+.2f} ({total_net_pnl_pct:+.1f}%)
 Open Positions: {len(self.positions)}
 
 {' | '.join(pnl_details[:5])}"""
@@ -359,21 +475,15 @@ Open Positions: {len(self.positions)}
                         # Send update to Telegram
                         send_telegram(pnl_message)
                         
-                        logger.info(f"📊 Floating P/L: ${total_floating_pnl:+.2f}")
+                        logger.info(f"📊 Net Floating P/L: ${total_net_pnl:+.2f} (Fees: ${total_estimated_fees:.2f})")
                 
                 self.last_pnl_update = current_time
                 
         except Exception as e:
             logger.error(f"Error updating floating P/L: {e}")
     
-    def get_position_pnl(self, position: Dict, current_price: float) -> Tuple[float, float]:
-        """Calculate P/L for a position"""
-        pnl = (current_price - position['entry_price']) * position['size']
-        pnl_pct = (current_price / position['entry_price'] - 1) * 100
-        return pnl, pnl_pct
-    
     def analyze_symbol(self, symbol: str) -> Dict:
-        """Analyze a symbol and potentially open a trade"""
+        """Analyze a symbol and potentially open a trade WITH FEES"""
         try:
             # Skip if we have too many positions already
             open_positions = len([p for p in self.positions if p['status'] == "OPEN"])
@@ -393,7 +503,11 @@ Open Positions: {len(self.positions)}
             latest = df.iloc[-1]
             current_price = latest['close']
             
-            # Prepare features for ML model (10 features to match training)
+            # Check minimum trade amount
+            if current_price < 0.01:  # Avoid very low priced coins
+                return {"symbol": symbol, "signal": "HOLD", "confidence": 0}
+            
+            # Prepare features for ML model
             feature_cols = ['rsi', 'macd', 'macd_hist', 'bb_position', 'volume_ratio', 
                           'returns', 'atr', 'stoch_k', 'price_change_5', 'sma_20']
             
@@ -404,17 +518,11 @@ Open Positions: {len(self.positions)}
                 else:
                     features.append(0.0)
             
-            # Ensure we have exactly 10 features
             features = np.array(features[:10]).reshape(1, -1)
             
             # Get predictions
             ml_prob = self.ai_models.predict_ml(features)
-            
-            # Combined probability
-            combined_prob = ml_prob  # Simplified since LSTM is removed
-            
-            # VERY LOOSE BUY CONDITIONS
-            signal = "HOLD"
+            combined_prob = ml_prob
             
             # Check if we should open a position
             if (combined_prob > COMBINED_THRESHOLD and
@@ -426,43 +534,93 @@ Open Positions: {len(self.positions)}
                 if last_trade and (datetime.now() - last_trade).seconds < 300:
                     return {"symbol": symbol, "signal": "HOLD", "confidence": combined_prob}
                 
-                # Calculate position size
-                position_value = min(self.balance * RISK_PER_TRADE, self.balance * 0.2)
+                # Calculate position size (accounting for fees)
+                position_value = min(self.balance * RISK_PER_TRADE, self.balance * 0.15)
+                
+                # Ensure minimum trade size
+                if position_value < MIN_TRADE_USDT:
+                    position_value = MIN_TRADE_USDT
+                
+                if position_value > self.balance * 0.9:
+                    return {"symbol": symbol, "signal": "HOLD", "confidence": combined_prob}
+                
                 entry_price = current_price
+                
+                # Calculate size with precision
+                size = position_value / entry_price
+                
+                # Round to reasonable precision
+                size = round(size, 6)
+                
+                # Check minimum crypto amount
+                if size < MIN_TRADE_CRYPTO:
+                    return {"symbol": symbol, "signal": "HOLD", "confidence": combined_prob}
+                
+                # Calculate fees
+                trade_value, entry_fee, total_entry_cost = self.adjust_for_fees(entry_price, size)
+                
+                # Check if we have enough balance including fees
+                if total_entry_cost > self.balance:
+                    # Try to adjust size to fit balance
+                    adjusted_size = (self.balance * 0.95) / entry_price
+                    adjusted_size = round(adjusted_size, 6)
+                    
+                    if adjusted_size < MIN_TRADE_CRYPTO:
+                        return {"symbol": symbol, "signal": "HOLD", "confidence": combined_prob}
+                    
+                    trade_value, entry_fee, total_entry_cost = self.adjust_for_fees(entry_price, adjusted_size)
+                    size = adjusted_size
+                    position_value = trade_value
+                
+                # Calculate stop loss and take profit adjusted for fees
+                break_even_price = self.calculate_break_even_price(entry_price)
                 stop_loss = entry_price * (1 - STOP_LOSS_PCT)
                 take_profit = entry_price * (1 + TAKE_PROFIT_PCT)
+                
+                # Ensure take profit is above break even
+                if take_profit <= break_even_price:
+                    take_profit = break_even_price * 1.01
                 
                 position = {
                     "symbol": symbol,
                     "entry_price": entry_price,
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
+                    "break_even_price": break_even_price,
                     "entry_time": datetime.now(),
-                    "size": position_value / entry_price,
-                    "value": position_value,
+                    "size": size,
+                    "gross_value": trade_value,
+                    "entry_fee": entry_fee,
+                    "total_entry_cost": total_entry_cost,
                     "status": "OPEN",
                     "confidence": combined_prob,
                     "current_price": entry_price,
-                    "floating_pnl": 0.0,
-                    "floating_pnl_pct": 0.0
+                    "floating_pnl": -entry_fee,  # Start with negative fee
+                    "floating_pnl_pct": -100 * (entry_fee / trade_value),
+                    "estimated_exit_fee": self.calculate_exit_fee(trade_value)
                 }
                 
+                # Deduct from balance
+                self.balance -= total_entry_cost
+                self.total_fees_paid += entry_fee
                 self.positions.append(position)
-                self.balance -= position_value
                 self.last_trade_time[symbol] = datetime.now()
                 
                 signal = "BUY"
                 
-                logger.info(f"📈 BUY {symbol} @ ${entry_price:.2f} | Size: ${position_value:.2f}")
+                logger.info(f"📈 BUY {symbol} @ ${entry_price:.2f} | Size: ${trade_value:.2f} | Fee: ${entry_fee:.2f}")
                 
-                trade_msg = f"""✅ PAPER TRADE ENTERED
+                trade_msg = f"""✅ REALISTIC TRADE ENTERED
 Symbol: {symbol}
 Entry: ${entry_price:.2f}
+Size: {size:.6f} {symbol.split('/')[0]} (${trade_value:.2f})
+Entry Fee: ${entry_fee:.2f} ({TAKER_FEE*100:.2f}%)
 Stop Loss: ${stop_loss:.2f} ({STOP_LOSS_PCT*100:.1f}%)
 Take Profit: ${take_profit:.2f} ({TAKE_PROFIT_PCT*100:.1f}%)
-Size: {position['size']:.6f} {symbol.split('/')[0]}
+Break Even: ${break_even_price:.2f}
 AI Confidence: {combined_prob:.1%}
 Balance: ${self.balance:,.2f}
+Total Fees Paid: ${self.total_fees_paid:.2f}
 Open Positions: {open_positions + 1}/{MAX_POSITIONS}"""
                 send_telegram(trade_msg)
             
@@ -483,18 +641,20 @@ Open Positions: {open_positions + 1}/{MAX_POSITIONS}"""
             if pos['symbol'] != symbol or pos['status'] != "OPEN":
                 continue
             
-            # Update current price and floating P/L
+            # Update current price and floating P/L (including estimated fees)
             pos['current_price'] = current_price
-            pnl, pnl_pct = self.get_position_pnl(pos, current_price)
-            pos['floating_pnl'] = pnl
-            pos['floating_pnl_pct'] = pnl_pct
             
-            # Check stop loss
+            # Calculate net P/L including estimated fees
+            gross_pnl, total_fees, net_pnl, net_pnl_pct = self.calculate_real_pnl(pos, current_price)
+            pos['floating_pnl'] = net_pnl
+            pos['floating_pnl_pct'] = net_pnl_pct
+            
+            # Check stop loss (based on NET price including fees)
             if current_price <= pos['stop_loss']:
                 self.close_position(pos, current_price, "STOP_LOSS")
                 positions_to_remove.append(pos)
             
-            # Check take profit
+            # Check take profit (based on NET price including fees)
             elif current_price >= pos['take_profit']:
                 self.close_position(pos, current_price, "TAKE_PROFIT")
                 positions_to_remove.append(pos)
@@ -505,31 +665,44 @@ Open Positions: {open_positions + 1}/{MAX_POSITIONS}"""
                 self.positions.remove(pos)
     
     def close_position(self, position: Dict, exit_price: float, reason: str):
-        """Close a position and send notification"""
-        pnl, pnl_pct = self.get_position_pnl(position, exit_price)
-        self.balance += position['value'] + pnl
+        """Close a position with REAL fees and send notification"""
+        # Calculate REAL P/L including fees
+        gross_pnl, total_fees, net_pnl, net_pnl_pct = self.calculate_real_pnl(position, exit_price)
         
+        # Add to balance (net amount after fees)
+        exit_trade_value = exit_price * position['size']
+        exit_fee = self.calculate_exit_fee(exit_trade_value)
+        net_proceeds = exit_trade_value - exit_fee
+        self.balance += net_proceeds
+        
+        # Update total fees
+        self.total_fees_paid += exit_fee
+        
+        # Update position
         position['status'] = "CLOSED"
         position['exit_price'] = exit_price
         position['exit_time'] = datetime.now()
-        position['pnl'] = pnl
-        position['pnl_pct'] = pnl_pct
+        position['gross_pnl'] = gross_pnl
+        position['total_fees'] = total_fees
+        position['net_pnl'] = net_pnl
+        position['net_pnl_pct'] = net_pnl_pct
+        position['exit_fee'] = exit_fee
         position['exit_reason'] = reason
         
         self.trade_history.append(position.copy())
         
-        # Determine emoji based on P/L
-        if pnl > 0:
+        # Determine emoji and result
+        if net_pnl > 0:
             emoji = "💰"
             result = "PROFIT"
-        elif pnl < 0:
+        elif net_pnl < 0:
             emoji = "📉"
             result = "LOSS"
         else:
             emoji = "⚖️"
             result = "BREAK EVEN"
         
-        logger.info(f"{emoji} {reason} {position['symbol']} @ ${exit_price:.2f} | P/L: ${pnl:+.2f}")
+        logger.info(f"{emoji} {reason} {position['symbol']} | Net P/L: ${net_pnl:+.2f} (Fees: ${total_fees:.2f})")
         
         # Format duration
         duration = position['exit_time'] - position['entry_time']
@@ -540,16 +713,21 @@ Open Positions: {open_positions + 1}/{MAX_POSITIONS}"""
 Symbol: {position['symbol']}
 Entry: ${position['entry_price']:.2f}
 Exit: ${exit_price:.2f} ({reason})
-P/L: ${pnl:+.2f} ({pnl_pct:+.1f}%)
+Gross P/L: ${gross_pnl:+.2f}
+Entry Fee: ${position['entry_fee']:.2f}
+Exit Fee: ${exit_fee:.2f}
+Total Fees: ${total_fees:.2f}
+Net P/L: ${net_pnl:+.2f} ({net_pnl_pct:+.1f}%)
 Size: {position['size']:.6f} {position['symbol'].split('/')[0]}
 Duration: {hours}h {minutes}m {seconds}s
 Balance: ${self.balance:,.2f}
+Total Fees Paid: ${self.total_fees_paid:.2f}
 Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}/{MAX_POSITIONS}"""
         
         send_telegram(close_msg)
     
     async def send_daily_summary(self):
-        """Send daily trading summary"""
+        """Send daily trading summary with fee analysis"""
         while True:
             try:
                 # Send summary at 23:55 daily
@@ -557,35 +735,55 @@ Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}/{MAX
                 if now.hour == 23 and now.minute == 55:
                     total_trades = len(self.trade_history)
                     if total_trades > 0:
+                        # Calculate statistics
                         winning_trades = len([t for t in self.trade_history 
-                                            if t.get('pnl', 0) > 0])
-                        losing_trades = total_trades - winning_trades
-                        win_rate = winning_trades / total_trades * 100
+                                            if t.get('net_pnl', 0) > 0])
+                        losing_trades = len([t for t in self.trade_history 
+                                           if t.get('net_pnl', 0) < 0])
+                        break_even_trades = total_trades - winning_trades - losing_trades
+                        win_rate = winning_trades / total_trades * 100 if total_trades > 0 else 0
                         
-                        total_pnl = sum(t.get('pnl', 0) for t in self.trade_history)
-                        avg_win = np.mean([t.get('pnl', 0) for t in self.trade_history 
-                                          if t.get('pnl', 0) > 0]) if winning_trades > 0 else 0
-                        avg_loss = np.mean([t.get('pnl', 0) for t in self.trade_history 
-                                           if t.get('pnl', 0) < 0]) if losing_trades > 0 else 0
+                        # P/L statistics
+                        total_gross_pnl = sum(t.get('gross_pnl', 0) for t in self.trade_history)
+                        total_net_pnl = sum(t.get('net_pnl', 0) for t in self.trade_history)
+                        total_fees = sum(t.get('total_fees', 0) for t in self.trade_history)
+                        
+                        avg_win = np.mean([t.get('net_pnl', 0) for t in self.trade_history 
+                                          if t.get('net_pnl', 0) > 0]) if winning_trades > 0 else 0
+                        avg_loss = np.mean([t.get('net_pnl', 0) for t in self.trade_history 
+                                           if t.get('net_pnl', 0) < 0]) if losing_trades > 0 else 0
                         
                         # Calculate best and worst trade
-                        trades_with_pnl = [(t['symbol'], t.get('pnl', 0), t.get('pnl_pct', 0)) 
+                        trades_with_pnl = [(t['symbol'], t.get('net_pnl', 0), t.get('net_pnl_pct', 0)) 
                                          for t in self.trade_history]
                         if trades_with_pnl:
                             best_trade = max(trades_with_pnl, key=lambda x: x[1])
                             worst_trade = min(trades_with_pnl, key=lambda x: x[1])
                         
-                        summary = f"""📈 DAILY TRADING SUMMARY
+                        # Calculate current floating P/L
+                        current_floating_pnl = 0
+                        for pos in self.positions:
+                            if pos['status'] == "OPEN":
+                                current_price = self.market_data.fetch_current_price(pos['symbol'])
+                                if current_price:
+                                    _, _, net_pnl, _ = self.calculate_real_pnl(pos, current_price)
+                                    current_floating_pnl += net_pnl
+                        
+                        summary = f"""📈 REALISTIC DAILY SUMMARY
 Date: {now.strftime('%Y-%m-%d')}
 Total Trades: {total_trades}
-Win Rate: {win_rate:.1f}% ({winning_trades}W/{losing_trades}L)
-Total P/L: ${total_pnl:+.2f}
+Win Rate: {win_rate:.1f}% ({winning_trades}W/{losing_trades}L/{break_even_trades}BE)
+Total Gross P/L: ${total_gross_pnl:+,.2f}
+Total Fees Paid: ${total_fees:,.2f}
+Total Net P/L: ${total_net_pnl:+,.2f}
 Average Win: ${avg_win:+.2f}
 Average Loss: ${avg_loss:+.2f}
 Best Trade: {best_trade[0]} (${best_trade[1]:+.2f}, {best_trade[2]:+.1f}%)
 Worst Trade: {worst_trade[0]} (${worst_trade[1]:+.2f}, {worst_trade[2]:+.1f}%)
 Current Balance: ${self.balance:,.2f}
-Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}"""
+Current Floating P/L: ${current_floating_pnl:+,.2f}
+Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}
+Total Lifetime Fees: ${self.total_fees_paid:.2f}"""
                         
                         send_telegram(summary)
                         logger.info(f"📈 Daily summary sent")
@@ -607,7 +805,7 @@ Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}"""
         while True:
             try:
                 iteration += 1
-                logger.info(f"🔄 Iteration {iteration} | Balance: ${self.balance:,.2f} | Open positions: {len(self.positions)}")
+                logger.info(f"🔄 Iteration {iteration} | Balance: ${self.balance:,.2f} | Open positions: {len(self.positions)} | Total Fees: ${self.total_fees_paid:.2f}")
                 
                 # Update floating P/L
                 await self.update_floating_pnl()
@@ -626,25 +824,19 @@ Open Positions: {len([p for p in self.positions if p['status'] == 'OPEN'])}"""
                 if iteration % 10 == 0:
                     total_trades = len(self.trade_history)
                     if total_trades > 0:
-                        winning_trades = len([t for t in self.trade_history if t.get('pnl', 0) > 0])
+                        winning_trades = len([t for t in self.trade_history if t.get('net_pnl', 0) > 0])
                         win_rate = winning_trades / total_trades * 100
-                        total_pnl = sum(t.get('pnl', 0) for t in self.trade_history)
+                        total_net_pnl = sum(t.get('net_pnl', 0) for t in self.trade_history)
+                        total_fees = sum(t.get('total_fees', 0) for t in self.trade_history)
                         
-                        # Calculate current floating P/L
-                        current_floating_pnl = 0
-                        for pos in self.positions:
-                            if pos['status'] == "OPEN":
-                                current_price = self.market_data.fetch_current_price(pos['symbol'])
-                                if current_price:
-                                    current_floating_pnl += (current_price - pos['entry_price']) * pos['size']
-                        
-                        summary = f"""📊 TRADING SUMMARY
+                        summary = f"""📊 REALISTIC SUMMARY
 Total Trades: {total_trades}
 Win Rate: {win_rate:.1f}%
-Total Realized P/L: ${total_pnl:+,.2f}
-Current Floating P/L: ${current_floating_pnl:+,.2f}
+Total Net P/L: ${total_net_pnl:+,.2f}
+Total Fees Paid: ${total_fees:,.2f}
 Current Balance: ${self.balance:,.2f}
-Open Positions: {len(self.positions)}"""
+Open Positions: {len(self.positions)}
+Lifetime Fees: ${self.total_fees_paid:.2f}"""
                         logger.info(summary)
                 
                 # Wait for next cycle
