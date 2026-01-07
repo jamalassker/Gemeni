@@ -25,7 +25,14 @@ from aiohttp import web
 warnings.filterwarnings('ignore')
 
 # ================= CONFIG =================
-SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+SYMBOLS = [
+    "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", 
+    "ADA/USDT:USDT", "AVAX/USDT:USDT", "DOGE/USDT:USDT", "DOT/USDT:USDT", 
+    "LINK/USDT:USDT", "MATIC/USDT:USDT", "TRX/USDT:USDT", "LTC/USDT:USDT", 
+    "BCH/USDT:USDT", "SHIB/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT", 
+    "SUI/USDT:USDT", "ICP/USDT:USDT", "RENDER/USDT:USDT", "STX/USDT:USDT"
+]
+
 TIMEFRAME = "1m"
 CANDLES = 200
 
