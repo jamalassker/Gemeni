@@ -61,8 +61,8 @@ LSTM_MODEL_PATH = os.path.join(MODEL_DIR, "lstm_model.h5")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 
 # Telegram
-TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
+TG_TOKEN = os.getenv("TELEGRAM_TOKEN", "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
 
 # Logging
 logging.basicConfig(
