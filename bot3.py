@@ -8,7 +8,7 @@ import ccxt.async_support as ccxt
 
 # ================= CONFIG =================
 SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", 
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT",]
     
 
 TIMEFRAME = "1m"
