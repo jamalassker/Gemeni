@@ -1,4 +1,4 @@
-import pandas as import pandas as pd
+import pandas as pd
 import numpy as np
 import requests, asyncio, os, logging, time
 from sklearn.ensemble import RandomForestClassifier
