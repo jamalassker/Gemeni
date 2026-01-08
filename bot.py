@@ -30,7 +30,7 @@ class ProSniperV7:
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.models = {}
         self.positions = {}
-        # INITIALIZED ONCE - NEVER RESET
+        # Persistent state
         self.cash = 10000.0
         self.realized_pnl = 0.0
         self.total_fees = 0.0
@@ -67,7 +67,7 @@ class ProSniperV7:
         return df.dropna()
 
     async def training_cycle(self):
-        """Background loop to retrain models every 2 hours without blocking or resetting state"""
+        """Background loop to retrain models without resetting cash"""
         while True:
             await self.send_tg("⚙️ <b>Brain Training Started...</b>")
             new_models = {}
@@ -86,34 +86,31 @@ class ProSniperV7:
             await asyncio.sleep(7200) # Wait 2 hours
 
     async def risk_manager(self):
+        """Manages exits and updates the live dashboard"""
         while True:
-            if not self.positions:
-                # Still show dashboard even if empty
-                report = f"💎 <b>PRO DASHBOARD</b>\nCash: {self.cash:.2f}\nNet: {self.realized_pnl - self.total_fees:+.2f}\n\n<i>Waiting for signals...</i>"
-                await self.send_tg(report, edit=True)
-                await asyncio.sleep(5)
-                continue
-                
             float_pnl = 0.0
             pos_details = ""
-            for sym, p in list(self.positions.items()):
-                try:
-                    ticker = await self.exchange.fetch_ticker(sym)
-                    price = ticker['last']
-                    cur_pnl = (price - p['entry']) * p['size']
-                    float_pnl += cur_pnl
-                    pos_details += f"▫️ {sym}: {cur_pnl:+.2f}\n"
+            
+            if not self.positions:
+                pos_details = "<i>Waiting for signals...</i>"
+            else:
+                for sym, p in list(self.positions.items()):
+                    try:
+                        ticker = await self.exchange.fetch_ticker(sym)
+                        price = ticker['last']
+                        cur_pnl = (price - p['entry']) * p['size']
+                        float_pnl += cur_pnl
+                        pos_details += f"▫️ {sym}: {cur_pnl:+.2f}\n"
 
-                    if price >= p['tp'] or price <= p['sl']:
-                        reason = "✅ TP" if price >= p['tp'] else "❌ SL"
-                        val = p['size'] * price
-                        # Update balance
-                        self.cash += (val * (1 - TAKER_FEE))
-                        self.realized_pnl += (val - (p['size'] * p['entry']))
-                        self.total_fees += (val * TAKER_FEE)
-                        del self.positions[sym]
-                        await self.send_tg(f"🏁 <b>EXIT {sym}:</b> {reason}")
-                except: continue
+                        if price >= p['tp'] or price <= p['sl']:
+                            reason = "✅ TP" if price >= p['tp'] else "❌ SL"
+                            val = p['size'] * price
+                            self.cash += (val * (1 - TAKER_FEE))
+                            self.realized_pnl += (val - (p['size'] * p['entry']))
+                            self.total_fees += (val * TAKER_FEE)
+                            del self.positions[sym]
+                            await self.send_tg(f"🏁 <b>EXIT {sym}:</b> {reason}")
+                    except: continue
 
             net = self.realized_pnl + float_pnl - self.total_fees
             report = f"💎 <b>PRO DASHBOARD</b>\nCash: {self.cash:.2f}\nNet: {net:+.2f}\n\n{pos_details}"
@@ -126,7 +123,6 @@ class ProSniperV7:
         asyncio.create_task(self.risk_manager())
         
         while True:
-            # Wait for first training to complete
             if not self.models:
                 await asyncio.sleep(5)
                 continue
@@ -146,7 +142,6 @@ class ProSniperV7:
                         trade_val = self.cash * 0.10
                         size = trade_val / entry
                         
-                        # Deduct from cash
                         self.cash -= (trade_val * (1 + TAKER_FEE))
                         self.total_fees += (trade_val * TAKER_FEE)
                         
@@ -160,52 +155,6 @@ if __name__ == "__main__":
     print("Initializing Engine...")
     asyncio.run(ProSniperV7().trade_loop())
 
-                net = self.realized_pnl + float_pnl - self.total_fees
-                report = f"💎 <b>PRO DASHBOARD</b>\nWallet: {self.wallet:.2f}\nNet PnL: {net:+.2f}\n\n{pos_list}"
-                await self.send_tg(report, edit=True)
-            await asyncio.sleep(2)
-
-    async def run(self):
-        print("🚀 STARTING ENGINE...")
-        # Start the training and dashboard as background tasks
-        asyncio.create_task(self.train_background())
-        asyncio.create_task(self.dashboard_loop())
-        
-        while True:
-            # Wait until at least one model is trained before trading
-            if not self.models:
-                await asyncio.sleep(5)
-                continue
-                
-            for sym in SYMBOLS:
-                if len(self.positions) >= MAX_POSITIONS or sym in self.positions: continue
-                try:
-                    # Ensure model exists for this symbol
-                    if sym not in self.models: continue
-                    
-                    df = await self.get_processed_data(sym, limit=20)
-                    prob = self.models[sym].predict_proba(df[['rsi', 'vol', 'ret']].iloc[-1:])[0][1]
-                    
-                    if prob >= MIN_PROB:
-                        price = df['c'].iloc[-1]
-                        # Use 10% of current wallet for each trade (Compounding)
-                        trade_val = self.wallet * 0.10
-                        size = trade_val / price
-                        
-                        self.wallet -= (trade_val * (1 + TAKER_FEE))
-                        self.total_fees += (trade_val * TAKER_FEE)
-                        self.positions[sym] = {
-                            'entry': price, 
-                            'size': size, 
-                            'stop': price * (1 - STOP_LOSS_PCT)
-                        }
-                        await self.send_tg(f"🚀 <b>BUY:</b> {sym} (Prob: {prob:.2f})")
-                except: continue
-                await asyncio.sleep(0.1)
-            await asyncio.sleep(1)
-
-if __name__ == "__main__":
-    asyncio.run(ProSniper().run())
 
 
 
