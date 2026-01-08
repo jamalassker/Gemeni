@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 import ccxt.async_support as ccxt 
 
-# ================= PRO-QUANT CONFIG =================
+# ================= DANGEROUS QUANT CONFIG =================
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT", "TRX/USDT",
     "POL/USDT", "LTC/USDT", "BCH/USDT", "SHIB/USDT", "NEAR/USDT", "APT/USDT", "SUI/USDT", "ICP/USDT", "RENDER/USDT", "STX/USDT",
@@ -17,21 +17,21 @@ SYMBOLS = [
 ]
 
 TIMEFRAME = "5m"
-MAX_POSITIONS = 1
-MIN_PROB = 0.58       
-STOP_LOSS_PCT = 0.015 
+MAX_POSITIONS = 10
+MIN_PROB = 0.55        
 TAKER_FEE = 0.001
+ATR_MULTIPLIER = 2.0   
 
 TG_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
 TG_CHAT = "5665906172"
 
-class ProSniper:
+class ProSniperV7:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.models = {}
         self.positions = {}
-        # PERSISTENT STATE - These are never reset
-        self.wallet = 10000.0
+        # INITIALIZED ONCE - NEVER RESET
+        self.cash = 10000.0
         self.realized_pnl = 0.0
         self.total_fees = 0.0
         self.report_id = None
@@ -49,62 +49,116 @@ class ProSniper:
         if edit: payload["message_id"] = self.report_id
         
         try:
-            async with self.session.post(url + method, json=payload, timeout=10) as resp:
+            async with self.session.post(url + method, json=payload, timeout=8) as resp:
                 data = await resp.json()
-                if not edit and data.get("ok"): self.report_id = data["result"]["message_id"]
+                if not edit and data.get("ok"): 
+                    self.report_id = data["result"]["message_id"]
         except Exception as e:
-            print(f"TG Error: {e}")
+            print(f"TG Log: {e}")
 
-    async def get_processed_data(self, sym, limit=100):
+    async def get_data(self, sym, limit=150):
         ohlcv = await self.exchange.fetch_ohlcv(sym, TIMEFRAME, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+        df['tr'] = np.maximum(df['h'] - df['l'], 
+                              np.maximum(abs(df['h'] - df['c'].shift(1)), abs(df['l'] - df['c'].shift(1))))
+        df['atr'] = df['tr'].rolling(14).mean()
         df['rsi'] = 100 - (100 / (1 + (df['c'].diff().where(df['c'].diff() > 0, 0).rolling(14).mean() / 
                                       df['c'].diff().where(df['c'].diff() < 0, 0).abs().rolling(14).mean().replace(0,0.001))))
-        df['vol'] = df['c'].pct_change().rolling(10).std()
-        df['ret'] = df['c'].pct_change()
         return df.dropna()
 
-    async def train_background(self):
-        """Elite Background Task: Updates models without resetting wallet/positions"""
+    async def training_cycle(self):
+        """Background loop to retrain models every 2 hours without blocking or resetting state"""
         while True:
-            await self.send_tg("🧠 <b>Periodic Retraining Started...</b>\n(Balance and positions are protected)")
+            await self.send_tg("⚙️ <b>Brain Training Started...</b>")
             new_models = {}
             for sym in SYMBOLS:
                 try:
-                    df = await self.get_processed_data(sym)
-                    X = df[['rsi', 'vol', 'ret']]
-                    y = (df['c'].shift(-1) > df['c']).astype(int)
+                    df = await self.get_data(sym)
+                    df['target'] = (df['c'].shift(-5) > df['c'] * 1.008).astype(int) 
+                    X = df[['rsi', 'atr']]
                     model = Pipeline([('s', StandardScaler()), ('rf', RandomForestClassifier(n_estimators=50))])
-                    model.fit(X, y)
+                    model.fit(X, df['target'])
                     new_models[sym] = model
                 except: continue
             
-            # Atomic update: only swap the models, don't touch anything else
             self.models.update(new_models)
-            await self.send_tg("✅ <b>Models Updated</b>: New intelligence applied to current balance.")
-            await asyncio.sleep(7200) # Sleep for 2 hours
+            await self.send_tg("✅ <b>Brains Ready.</b> Portfolio state maintained.")
+            await asyncio.sleep(7200) # Wait 2 hours
 
-    async def dashboard_loop(self):
+    async def risk_manager(self):
         while True:
-            if self.positions:
-                float_pnl = 0.0
-                pos_list = ""
-                for sym, p in list(self.positions.items()):
-                    try:
-                        ticker = await self.exchange.fetch_ticker(sym)
-                        cur_pnl = (ticker['last'] - p['entry']) * p['size']
-                        float_pnl += cur_pnl
-                        pos_list += f"▫️ {sym}: {cur_pnl:+.2f}\n"
+            if not self.positions:
+                # Still show dashboard even if empty
+                report = f"💎 <b>PRO DASHBOARD</b>\nCash: {self.cash:.2f}\nNet: {self.realized_pnl - self.total_fees:+.2f}\n\n<i>Waiting for signals...</i>"
+                await self.send_tg(report, edit=True)
+                await asyncio.sleep(5)
+                continue
+                
+            float_pnl = 0.0
+            pos_details = ""
+            for sym, p in list(self.positions.items()):
+                try:
+                    ticker = await self.exchange.fetch_ticker(sym)
+                    price = ticker['last']
+                    cur_pnl = (price - p['entry']) * p['size']
+                    float_pnl += cur_pnl
+                    pos_details += f"▫️ {sym}: {cur_pnl:+.2f}\n"
+
+                    if price >= p['tp'] or price <= p['sl']:
+                        reason = "✅ TP" if price >= p['tp'] else "❌ SL"
+                        val = p['size'] * price
+                        # Update balance
+                        self.cash += (val * (1 - TAKER_FEE))
+                        self.realized_pnl += (val - (p['size'] * p['entry']))
+                        self.total_fees += (val * TAKER_FEE)
+                        del self.positions[sym]
+                        await self.send_tg(f"🏁 <b>EXIT {sym}:</b> {reason}")
+                except: continue
+
+            net = self.realized_pnl + float_pnl - self.total_fees
+            report = f"💎 <b>PRO DASHBOARD</b>\nCash: {self.cash:.2f}\nNet: {net:+.2f}\n\n{pos_details}"
+            await self.send_tg(report, edit=True)
+            await asyncio.sleep(2)
+
+    async def trade_loop(self):
+        # Start background tasks
+        asyncio.create_task(self.training_cycle())
+        asyncio.create_task(self.risk_manager())
+        
+        while True:
+            # Wait for first training to complete
+            if not self.models:
+                await asyncio.sleep(5)
+                continue
+            
+            for sym in SYMBOLS:
+                if sym in self.positions or len(self.positions) >= MAX_POSITIONS: continue
+                try:
+                    df = await self.get_data(sym, limit=30)
+                    curr = df.iloc[-1]
+                    prob = self.models[sym].predict_proba(df[['rsi', 'atr']].iloc[-1:])[0][1]
+                    
+                    if prob >= MIN_PROB:
+                        entry = curr['c']
+                        tp = entry + (curr['atr'] * ATR_MULTIPLIER)
+                        sl = entry - (curr['atr'] * 1.5)
                         
-                        # Hard Stop Loss Check
-                        if ticker['last'] <= p['stop']:
-                            exit_val = p['size'] * ticker['last']
-                            self.wallet += (exit_val * (1 - TAKER_FEE))
-                            self.total_fees += (exit_val * TAKER_FEE)
-                            self.realized_pnl += (cur_pnl - (exit_val * TAKER_FEE))
-                            del self.positions[sym]
-                            await self.send_tg(f"🛡️ <b>STOP LOSS HIT:</b> {sym}")
-                    except: continue
+                        trade_val = self.cash * 0.10
+                        size = trade_val / entry
+                        
+                        # Deduct from cash
+                        self.cash -= (trade_val * (1 + TAKER_FEE))
+                        self.total_fees += (trade_val * TAKER_FEE)
+                        
+                        self.positions[sym] = {'entry': entry, 'size': size, 'tp': tp, 'sl': sl}
+                        await self.send_tg(f"🚀 <b>BUY:</b> {sym} (Prob: {prob:.2f})")
+                except: continue
+                await asyncio.sleep(0.1)
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    print("Initializing Engine...")
+    asyncio.run(ProSniperV7().trade_loop())
 
                 net = self.realized_pnl + float_pnl - self.total_fees
                 report = f"💎 <b>PRO DASHBOARD</b>\nWallet: {self.wallet:.2f}\nNet PnL: {net:+.2f}\n\n{pos_list}"
