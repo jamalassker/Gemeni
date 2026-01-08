@@ -17,7 +17,7 @@ SYMBOLS = [
 ]
 
 TIMEFRAME = "5m"
-MAX_POSITIONS = 10
+MAX_POSITIONS = 1
 MIN_PROB = 0.55        
 TAKER_FEE = 0.001
 ATR_MULTIPLIER = 2.0   
@@ -31,7 +31,7 @@ class ProSniperV7:
         self.models = {}
         self.positions = {}
         # Persistent state
-        self.cash = 10000.0
+        self.cash = 10
         self.realized_pnl = 0.0
         self.total_fees = 0.0
         self.report_id = None
