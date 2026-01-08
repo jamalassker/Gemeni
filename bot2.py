@@ -31,7 +31,7 @@ class PersistentProSniper:
         self.models = {}
         self.positions = {}
         # STATE VARIABLES - Persistent throughout the session
-        self.cash = 10
+        self.cash = 100
         self.realized_pnl = 0.0
         self.total_fees = 0.0
         self.report_id = None
