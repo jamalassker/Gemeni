@@ -25,7 +25,7 @@ class Bot3Scalper:
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.models = {}
         self.positions = {}
-        self.cash = 10.0      
+        self.cash = 100  
         self.realized_pnl = 0.0
         self.report_id = None
         self.session = None
