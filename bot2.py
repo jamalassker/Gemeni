@@ -9,7 +9,7 @@ import ccxt.async_support as ccxt
 # ================= PERSISTENT CONFIG =================
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "PEPE/USDT", "SUI/USDT"] 
 TIMEFRAME = "5m"
-MAX_POSITIONS = 10
+MAX_POSITIONS = 1
 MIN_PROB = 0.55
 TAKER_FEE = 0.001
 ATR_MULTIPLIER = 2.0
