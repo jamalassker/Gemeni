@@ -14,7 +14,7 @@ MIN_PROB = 0.62       # Elite selectivity
 TAKER_FEE = 0.001
 ATR_MULTIPLIER = 2.0  # Take profit at 2x ATR
 
-TG_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
+TG_TOKEN = "8488789199:AAHhViKmhXlvE7WpgZGVDS4WjCjUuBVtqzQ"
 TG_CHAT = "5665906172"
 
 class HardenedSniper:
