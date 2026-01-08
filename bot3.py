@@ -1,136 +1,115 @@
-
 import pandas as pd
 import numpy as np
 import asyncio, time, aiohttp
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.preprocessing import RobustScaler
-import ccxt.async_support as ccxt 
+import ccxt.async_support as ccxt
 
-# ================= CONFIG =================
-SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT",]
-    
-
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT"]
 TIMEFRAME = "1m"
-MAX_POSITIONS = 1
-MIN_PROB = 0.51        # Loosened further to force activity
+MAX_HOLD = 180
 TAKER_FEE = 0.001
-MIN_WIN_PCT = 0.002    # Targeting 0.2% gains for fast turnover
-
 TG_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
 TG_CHAT = "8287625785"
 
-class Bot3Scalper:
+class ZScalper:
     def __init__(self):
-        self.exchange = ccxt.binance({'enableRateLimit': True})
-        self.models = {}
-        self.positions = {}
-        self.cash = 100  
-        self.realized_pnl = 0.0
-        self.report_id = None
-        self.session = None
+        self.ex = ccxt.binance({'enableRateLimit': True})
+        self.pos = None
+        self.cash = 100.0
+        self.pnl = 0.0
+        self.msg_id = None
+        self.sess = None
 
-    async def init_session(self):
-        if not self.session: self.session = aiohttp.ClientSession()
-
-    async def send_tg(self, text, edit=False):
-        await self.init_session()
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/" + ("editMessageText" if edit and self.report_id else "sendMessage")
-        payload = {"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"}
-        if edit: payload["message_id"] = self.report_id
+    async def tg(self, txt, edit=False):
+        if not self.sess: self.sess = aiohttp.ClientSession()
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/" + ("editMessageText" if edit and self.msg_id else "sendMessage")
+        data = {"chat_id": TG_CHAT, "text": txt, "parse_mode": "HTML"}
+        if edit and self.msg_id: data["message_id"] = self.msg_id
         try:
-            async with self.session.post(url, json=payload, timeout=10) as resp:
-                data = await resp.json()
-                if not edit and data.get("ok"): self.report_id = data["result"]["message_id"]
-        except Exception as e: print(f"TG Error: {e}")
+            async with self.sess.post(url, json=data, timeout=5) as r:
+                res = await r.json()
+                if not edit and res.get("ok"): self.msg_id = res["result"]["message_id"]
+        except: pass
 
-    async def get_features(self, sym, limit=100):
-        try:
-            ohlcv = await self.exchange.fetch_ohlcv(sym, TIMEFRAME, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-            df['rsi'] = 100 - (100 / (1 + (df['c'].diff().where(df['c'].diff() > 0, 0).rolling(14).mean() / df['c'].diff().where(df['c'].diff() < 0, 0).abs().rolling(14).mean().replace(0,0.001))))
-            df['body_size'] = (df['c'] - df['o']).abs() / (df['h'] - df['l']).replace(0, 0.001)
-            df['ret_lag'] = df['c'].pct_change()
-            return df.dropna()
-        except: return pd.DataFrame()
+    def calc(self, df):
+        # Z-Score: how far price deviates from mean
+        df['sma20'] = df['c'].rolling(20).mean()
+        df['std20'] = df['c'].rolling(20).std()
+        df['zscore'] = (df['c'] - df['sma20']) / df['std20'].replace(0, 1e-9)
+        # RSI
+        delta = df['c'].diff()
+        gain = delta.clip(lower=0).rolling(10).mean()
+        loss = (-delta.clip(upper=0)).rolling(10).mean()
+        df['rsi'] = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+        # Momentum & Volume
+        df['mom'] = df['c'].pct_change(5) * 100
+        df['vol_z'] = (df['v'] - df['v'].rolling(20).mean()) / df['v'].rolling(20).std().replace(0, 1e-9)
+        df['atr'] = (df['h'] - df['l']).rolling(10).mean()
+        return df.dropna()
 
-    async def train_background(self):
+    async def fetch(self, sym):
+        ohlcv = await self.ex.fetch_ohlcv(sym, TIMEFRAME, limit=50)
+        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+        return self.calc(df)
+
+    async def run(self):
+        await self.tg("🚀 <b>Z-SCORE SCALPER ONLINE</b>")
         while True:
-            await self.send_tg("⚙️ <b>Phase 1: Brain Training Started</b>")
-            new_models = {}
-            for i, sym in enumerate(SYMBOLS):
-                df = await self.get_features(sym, limit=200)
-                if df.empty: continue
-                
-                df['target'] = (df['c'].shift(-3) > df['c'] * (1 + MIN_WIN_PCT)).astype(int)
-                X = df[['rsi', 'body_size', 'ret_lag']]
-                y = df['target']
-                
-                if len(y.unique()) > 1: # Ensure data has both wins and losses
-                    model = GradientBoostingClassifier(n_estimators=20)
-                    model.fit(X, y)
-                    new_models[sym] = {'model': model, 'scaler': RobustScaler().fit(X)}
-                
-                if i % 5 == 0: # Update every 5 symbols
-                    print(f"Trained {sym}...")
-            
-            self.models = new_models
-            await self.send_tg(f"✅ <b>Phase 2: Scanning {len(self.models)} Markets</b>")
-            await asyncio.sleep(3600)
+            # EXIT LOGIC
+            if self.pos:
+                try:
+                    tick = await self.ex.fetch_ticker(self.pos['sym'])
+                    price = tick['last']
+                    held = time.time() - self.pos['t']
+                    reason = None
+                    if price >= self.pos['tp']: reason = "✅TP"
+                    elif price <= self.pos['sl']: reason = "❌SL"
+                    elif held > MAX_HOLD: reason = "⏱TIME"
+                    elif held > 45 and price > self.pos['entry'] * 1.001: reason = "🔒LOCK"
+                    if reason:
+                        val = self.pos['sz'] * price * (1 - TAKER_FEE)
+                        gain = val - self.pos['cost']
+                        self.pnl += gain
+                        self.cash = val
+                        await self.tg(f"🏁 {reason} {self.pos['sym']} | ${gain:+.3f} | Net: ${self.pnl:+.2f}")
+                        self.pos = None
+                except: pass
 
-    async def run_scalper(self):
-        await self.send_tg("🚀 <b>BOT3.1 ONLINE</b>\nInitializing Engine...")
-        asyncio.create_task(self.train_background())
-        
-        while True:
-            if not self.models:
-                await asyncio.sleep(5) # Still training
-                continue
-
-            # 1. RISK & DASHBOARD
-            float_pnl = 0.0
-            if self.positions:
-                for sym, p in list(self.positions.items()):
-                    ticker = await self.exchange.fetch_ticker(sym)
-                    curr_p = ticker['last']
-                    float_pnl = (curr_p - p['entry']) * p['size']
-                    
-                    elapsed = (time.time() - p['time']) / 60
-                    if curr_p >= p['tp'] or curr_p <= p['sl'] or elapsed > 5:
-                        reason = "🎯 TP" if curr_p >= p['tp'] else "🛡️ SL" if curr_p <= p['sl'] else "⏰ Time"
-                        val = p['size'] * curr_p
-                        self.cash += (val * (1 - TAKER_FEE))
-                        self.realized_pnl += (val - (p['size'] * p['entry']) - (val * TAKER_FEE))
-                        del self.positions[sym]
-                        await self.send_tg(f"🏁 <b>EXIT {sym} ({reason}):</b> Net {self.realized_pnl:+.4f}")
-            
-            # 2. ENTRY SEARCH
-            elif not self.positions:
-                best_sym, best_prob = None, 0
-                for sym in list(self.models.keys()):
-                    df = await self.get_features(sym, limit=20)
-                    if df.empty: continue
-                    feat = df[['rsi', 'body_size', 'ret_lag']].iloc[-1:]
-                    prob = self.models[sym]['model'].predict_proba(feat)[0][1]
-                    
-                    if prob > best_prob:
-                        best_prob, best_sym = prob, sym
+            # ENTRY LOGIC
+            if not self.pos:
+                best, best_score = None, 0
+                for sym in SYMBOLS:
+                    try:
+                        df = await self.fetch(sym)
+                        r = df.iloc[-1]
+                        # BUY SIGNAL: Z-score dip + RSI oversold + positive momentum + volume spike
+                        # Z < -1.5 = price below normal, RSI < 40 = oversold, mom > 0 = recovering
+                        score = 0
+                        if r['zscore'] < -1.2: score += 2
+                        if r['rsi'] < 40: score += 2
+                        if r['mom'] > 0.05: score += 1
+                        if r['vol_z'] > 1: score += 1
+                        if score > best_score:
+                            best_score, best = score, (sym, r)
+                    except: pass
                 
-                if best_sym and best_prob > MIN_PROB:
-                    price = (await self.exchange.fetch_ticker(best_sym))['last']
-                    size = (self.cash * (1 - TAKER_FEE)) / price
-                    self.positions[best_sym] = {
-                        'entry': price, 'size': size, 'time': time.time(),
-                        'tp': price * 1.004, 'sl': price * 0.996
+                if best and best_score >= 4:
+                    sym, r = best
+                    price = r['c']
+                    atr = r['atr']
+                    cost = self.cash * (1 + TAKER_FEE)
+                    self.pos = {
+                        'sym': sym, 'entry': price, 'sz': self.cash / price,
+                        'cost': cost, 't': time.time(),
+                        'tp': price + atr * 0.8, 'sl': price - atr * 1.0
                     }
-                    self.cash = 0 # All in
-                    await self.send_tg(f"⚡ <b>SCALP BUY:</b> {best_sym}\nProb: {best_prob:.2f}")
+                    self.cash = 0
+                    await self.tg(f"⚡ <b>BUY {sym}</b> @ {price:.4f} | Z:{r['zscore']:.1f} RSI:{r['rsi']:.0f}")
 
-            # Live Dashboard Update
-            net_val = (self.cash if not self.positions else 0) + (self.positions[list(self.positions.keys())[0]]['size'] * (await self.exchange.fetch_ticker(list(self.positions.keys())[0]))['last'] if self.positions else 0)
-            status = f"💰 <b>LIVE DASHBOARD</b>\nCash: ${self.cash + (float_pnl if self.positions else 0):.2f}\nNet PnL: {self.realized_pnl:+.4f}\nStatus: {'TRADING' if self.positions else 'SCANNING'}"
-            await self.send_tg(status, edit=True)
-            await asyncio.sleep(5)
+            # DASHBOARD
+            val = self.cash if not self.pos else self.pos['sz'] * (await self.ex.fetch_ticker(self.pos['sym']))['last']
+            st = f"🎯 {self.pos['sym']}" if self.pos else "🔍 Scanning"
+            await self.tg(f"💎 <b>Z-SCALPER</b>\n💰 ${val:.2f} | PnL: ${self.pnl:+.2f}\n{st}", edit=True)
+            await asyncio.sleep(2)
 
 if __name__ == "__main__":
-    asyncio.run(Bot3Scalper().run_scalper())
+    asyncio.run(ZScalper().run())
