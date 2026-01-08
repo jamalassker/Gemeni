@@ -17,7 +17,7 @@ SYMBOLS = [
 ]
 
 TIMEFRAME = "5m"
-MAX_POSITIONS = 10     # Cap at 10 simultaneous trades
+MAX_POSITIONS = 1   # Cap at 10 simultaneous trades
 MIN_PROB = 0.55        # Balanced confidence threshold
 TAKER_FEE = 0.001
 ATR_MULTIPLIER = 2.0   # Take Profit = 2x ATR
