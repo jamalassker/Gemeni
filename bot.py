@@ -17,7 +17,7 @@ SYMBOLS = [
 ]
 
 TIMEFRAME = "5m"
-MAX_POSITIONS = 10
+MAX_POSITIONS = 1
 MIN_PROB = 0.58       # Higher confidence threshold
 STOP_LOSS_PCT = 0.015 # Hard -1.5% per trade
 TAKER_FEE = 0.001
