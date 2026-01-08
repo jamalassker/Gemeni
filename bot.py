@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import requests, asyncio, os, logging, time
@@ -30,7 +29,7 @@ TG_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
 TG_CHAT = "5665906172"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("ElitePersistent")
+logger = logging.getLogger("PersistentElite")
 
 # --- Persistent Telegram Helper ---
 class TelegramManager:
@@ -49,10 +48,12 @@ class TelegramManager:
                 if r.get("ok"): self.report_msg_id = r["result"]["message_id"]
             else:
                 requests.post(url_edit, json={"chat_id": self.chat_id, "message_id": self.report_msg_id, "text": text, "parse_mode": "HTML"}, timeout=2)
-        except Exception as e: logger.error(f"TG Error: {e}")
+        except Exception as e: 
+            logger.error(f"TG Error: {e}")
+            self.report_msg_id = None # Reset on error to try a fresh message
 
     def notify(self, text):
-        """Sends a NEW message for critical events (Buy/Sell)"""
+        """Critical Alerts (New Notifications)"""
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         requests.post(url, json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"})
 
@@ -77,7 +78,6 @@ class SuperSniper:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.model = Pipeline([('s', StandardScaler()), ('rf', RandomForestClassifier(n_estimators=50))])
-        self.is_trained = False
         self.wallet_balance = INITIAL_BALANCE
         self.positions = []
         self.total_fees = 0.0
@@ -89,41 +89,46 @@ class SuperSniper:
             active = [p for p in self.positions if p['status'] == 'OPEN']
             if active:
                 floating = 0.0
-                pos_details = ""
+                details = ""
                 for p in active:
                     try:
                         ticker = self.exchange.fetch_ticker(p['sym'])
                         p_pnl = (ticker['last'] - p['entry']) * p['size']
                         floating += p_pnl
-                        pos_details += f"▫️ {p['sym']}: ${p_pnl:+.2f}\n"
+                        # Numbers only display for individual symbols
+                        details += f"▫️ {p['sym']}: {p_pnl:+.2f}\n"
                     except: continue
                 
                 net = self.realized_pnl + floating - self.total_fees
                 self.peak_net_profit = max(self.peak_net_profit, net)
                 
-                report = (f"💎 <b>ELITE DASHBOARD</b>\n"
-                          f"💰 <b>Wallet:</b> ${self.wallet_balance:.2f}\n"
-                          f"📈 <b>Net PnL:</b> ${net:.2f}\n"
-                          f"🚀 <b>Peak:</b> ${self.peak_net_profit:.2f}\n"
-                          f"-------------------\n"
-                          f"{pos_details}")
-                tg.send_or_edit_report(report)
+                dashboard = (f"💎 <b>ELITE DASHBOARD</b>\n"
+                             f"💰 Bal: {self.wallet_balance:.2f}\n"
+                             f"📈 Net: {net:.2f}\n"
+                             f"🚀 Peak: {self.peak_net_profit:.2f}\n"
+                             f"-------------------\n"
+                             f"{details}")
+                tg.send_or_edit_report(dashboard)
 
                 if self.peak_net_profit >= TRAIL_START_PROFIT:
                     if net <= (self.peak_net_profit * (1 - TRAIL_DROP_PCT)):
                         await self.close_all(active, floating, "TRAILING PROFIT LOCK 🏁")
             else:
-                tg.report_msg_id = None # Reset when no trades
+                # Idle Dashboard
+                tg.send_or_edit_report("💎 <b>ELITE DASHBOARD</b>\nStatus: Scanning 60 symbols...")
+            
             await asyncio.sleep(2)
 
     async def close_all(self, active_list, current_floating, reason):
         exit_fees = (sum(p['size'] * p['entry'] for p in active_list)) * TAKER_FEE
         self.realized_pnl += (current_floating - exit_fees)
+        self.wallet_balance += (sum(p['size'] * p['entry'] for p in active_list) + current_floating)
         self.total_fees += exit_fees
         for p in self.positions: p['status'] = 'CLOSED'
-        tg.notify(f"🏁 <b>{reason}</b>\nLocked: ${self.realized_pnl - self.total_fees:.2f}")
+        tg.notify(f"🏁 <b>{reason}</b> Net: ${self.realized_pnl - self.total_fees:.2f}")
         self.positions = []
         self.peak_net_profit = 0.0
+        tg.report_msg_id = None # Clear old report to start fresh next time
 
     async def trading_loop(self):
         hist = self.exchange.fetch_ohlcv("BTC/USDT", "5m", limit=100)
@@ -141,7 +146,7 @@ class SuperSniper:
 
                     if prob >= MIN_PROBABILITY:
                         price = row['close'].values[0]
-                        trade_val = self.wallet_balance * 0.10
+                        trade_val = self.wallet_balance * 0.10 # Auto-Compounds on growth
                         self.wallet_balance -= (trade_val * (1+TAKER_FEE))
                         self.total_fees += (trade_val * TAKER_FEE)
                         self.positions.append({'sym': symbol, 'entry': price, 'size': trade_val/price, 'status': 'OPEN'})
@@ -155,4 +160,5 @@ class SuperSniper:
 
 if __name__ == "__main__":
     asyncio.run(SuperSniper().run())
+
 
