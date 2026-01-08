@@ -1,11 +1,12 @@
+
 import pandas as pd
 import numpy as np
 import asyncio, time, aiohttp
-from sklearn.ensemble import GradientBoostingClassifier # Switched to GBM for better small-move detection
-from sklearn.preprocessing import RobustScaler # Better for handling crypto volatility
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.preprocessing import RobustScaler
 import ccxt.async_support as ccxt 
 
-# ================= BOT3: MICRO-SCALPER CONFIG =================
+# ================= CONFIG =================
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", 
     "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT",
@@ -13,11 +14,11 @@ SYMBOLS = [
     "FET/USDT", "RENDER/USDT", "WIF/USDT", "TIA/USDT", "ARB/USDT"
 ]
 
-TIMEFRAME = "1m"       # Ultra-fast scalping
-MAX_POSITIONS = 1      # Focus 100% of $10 on one trade
-MIN_PROB = 0.52        # Looser entry for higher activity
-TAKER_FEE = 0.001      # 0.1% Binance fee
-MIN_WIN_PCT = 0.003    # Aiming for 0.3% per scalp (Fast growth)
+TIMEFRAME = "1m"
+MAX_POSITIONS = 1
+MIN_PROB = 0.51        # Loosened further to force activity
+TAKER_FEE = 0.001
+MIN_WIN_PCT = 0.002    # Targeting 0.2% gains for fast turnover
 
 TG_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
 TG_CHAT = "8287625785"
@@ -27,9 +28,8 @@ class Bot3Scalper:
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.models = {}
         self.positions = {}
-        self.cash = 10.0      # Starting with $10
+        self.cash = 10.0      
         self.realized_pnl = 0.0
-        self.total_fees = 0.0
         self.report_id = None
         self.session = None
 
@@ -42,103 +42,98 @@ class Bot3Scalper:
         payload = {"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"}
         if edit: payload["message_id"] = self.report_id
         try:
-            async with self.session.post(url, json=payload, timeout=8) as resp:
+            async with self.session.post(url, json=payload, timeout=10) as resp:
                 data = await resp.json()
                 if not edit and data.get("ok"): self.report_id = data["result"]["message_id"]
-        except: pass
+        except Exception as e: print(f"TG Error: {e}")
 
     async def get_features(self, sym, limit=100):
-        ohlcv = await self.exchange.fetch_ohlcv(sym, TIMEFRAME, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-        
-        # ML Features: Momentum + Volatility + Price Action
-        df['rsi'] = 100 - (100 / (1 + (df['c'].diff().where(df['c'].diff() > 0, 0).rolling(14).mean() / df['c'].diff().where(df['c'].diff() < 0, 0).abs().rolling(14).mean().replace(0,0.001))))
-        df['body_size'] = (df['c'] - df['o']).abs() / (df['h'] - df['l'])
-        df['ret_lag'] = df['c'].pct_change()
-        df['vol_change'] = df['v'].pct_change()
-        
-        return df.dropna()
+        try:
+            ohlcv = await self.exchange.fetch_ohlcv(sym, TIMEFRAME, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+            df['rsi'] = 100 - (100 / (1 + (df['c'].diff().where(df['c'].diff() > 0, 0).rolling(14).mean() / df['c'].diff().where(df['c'].diff() < 0, 0).abs().rolling(14).mean().replace(0,0.001))))
+            df['body_size'] = (df['c'] - df['o']).abs() / (df['h'] - df['l']).replace(0, 0.001)
+            df['ret_lag'] = df['c'].pct_change()
+            return df.dropna()
+        except: return pd.DataFrame()
 
     async def train_background(self):
         while True:
-            await self.send_tg("🤖 <b>Bot3: Retraining Scalp Logic...</b>")
+            await self.send_tg("⚙️ <b>Phase 1: Brain Training Started</b>")
             new_models = {}
-            for sym in SYMBOLS:
-                try:
-                    df = await self.get_features(sym, limit=300)
-                    # Target: 0.3% gain in the next 3 candles
-                    df['target'] = (df['c'].shift(-3) > df['c'] * (1 + MIN_WIN_PCT)).astype(int)
-                    X = df[['rsi', 'body_size', 'ret_lag', 'vol_change']]
-                    y = df['target']
-                    
-                    model = GradientBoostingClassifier(n_estimators=30, learning_rate=0.1)
+            for i, sym in enumerate(SYMBOLS):
+                df = await self.get_features(sym, limit=200)
+                if df.empty: continue
+                
+                df['target'] = (df['c'].shift(-3) > df['c'] * (1 + MIN_WIN_PCT)).astype(int)
+                X = df[['rsi', 'body_size', 'ret_lag']]
+                y = df['target']
+                
+                if len(y.unique()) > 1: # Ensure data has both wins and losses
+                    model = GradientBoostingClassifier(n_estimators=20)
                     model.fit(X, y)
                     new_models[sym] = {'model': model, 'scaler': RobustScaler().fit(X)}
-                except: continue
+                
+                if i % 5 == 0: # Update every 5 symbols
+                    print(f"Trained {sym}...")
             
             self.models = new_models
-            await self.send_tg("🚀 <b>Scalp Ready.</b> Searching for high-prob setups...")
-            await asyncio.sleep(3600) # Retrain every hour for 1m timeframe
+            await self.send_tg(f"✅ <b>Phase 2: Scanning {len(self.models)} Markets</b>")
+            await asyncio.sleep(3600)
 
     async def run_scalper(self):
+        await self.send_tg("🚀 <b>BOT3.1 ONLINE</b>\nInitializing Engine...")
         asyncio.create_task(self.train_background())
         
         while True:
             if not self.models:
-                await asyncio.sleep(5)
+                await asyncio.sleep(5) # Still training
                 continue
 
-            # 1. RISK & DASHBOARD MANAGEMENT
+            # 1. RISK & DASHBOARD
+            float_pnl = 0.0
             if self.positions:
                 for sym, p in list(self.positions.items()):
                     ticker = await self.exchange.fetch_ticker(sym)
                     curr_p = ticker['last']
                     float_pnl = (curr_p - p['entry']) * p['size']
                     
-                    # Exit Conditions: TP (0.5%), SL (-0.3%), or Time (3 mins)
                     elapsed = (time.time() - p['time']) / 60
-                    if curr_p >= p['tp'] or curr_p <= p['sl'] or elapsed > 3:
+                    if curr_p >= p['tp'] or curr_p <= p['sl'] or elapsed > 5:
+                        reason = "🎯 TP" if curr_p >= p['tp'] else "🛡️ SL" if curr_p <= p['sl'] else "⏰ Time"
                         val = p['size'] * curr_p
-                        fee = val * TAKER_FEE
-                        self.cash += (val - fee)
-                        self.realized_pnl += (val - (p['size'] * p['entry']) - fee)
+                        self.cash += (val * (1 - TAKER_FEE))
+                        self.realized_pnl += (val - (p['size'] * p['entry']) - (val * TAKER_FEE))
                         del self.positions[sym]
-                        await self.send_tg(f"💰 <b>Scalp Closed:</b> {sym} | Net: {self.realized_pnl:+.4f}")
-                
-                # Update Dashboard
-                net_val = self.cash + (float_pnl if self.positions else 0)
-                dashboard = f"📈 <b>BOT3 LIVE</b>\nBalance: ${net_val:.4f}\nTotal PnL: {self.realized_pnl:+.4f}\nActive: {list(self.positions.keys())[0] if self.positions else 'Scanning...'}"
-                await self.send_tg(dashboard, edit=True)
+                        await self.send_tg(f"🏁 <b>EXIT {sym} ({reason}):</b> Net {self.realized_pnl:+.4f}")
             
-            # 2. ENTRY SEARCH (Only if no position open)
-            elif len(self.positions) < MAX_POSITIONS:
+            # 2. ENTRY SEARCH
+            elif not self.positions:
                 best_sym, best_prob = None, 0
-                for sym in SYMBOLS:
-                    try:
-                        df = await self.get_features(sym, limit=20)
-                        feat = df[['rsi', 'body_size', 'ret_lag', 'vol_change']].iloc[-1:]
-                        prob = self.models[sym]['model'].predict_proba(feat)[0][1]
-                        
-                        if prob > best_prob:
-                            best_prob = prob
-                            best_sym = sym
-                    except: continue
+                for sym in list(self.models.keys()):
+                    df = await self.get_features(sym, limit=20)
+                    if df.empty: continue
+                    feat = df[['rsi', 'body_size', 'ret_lag']].iloc[-1:]
+                    prob = self.models[sym]['model'].predict_proba(feat)[0][1]
+                    
+                    if prob > best_prob:
+                        best_prob, best_sym = prob, sym
                 
                 if best_sym and best_prob > MIN_PROB:
                     price = (await self.exchange.fetch_ticker(best_sym))['last']
-                    entry_cost = self.cash
-                    # Order execution
-                    fee = entry_cost * TAKER_FEE
-                    self.cash -= entry_cost
-                    size = (entry_cost - fee) / price
-                    
+                    size = (self.cash * (1 - TAKER_FEE)) / price
                     self.positions[best_sym] = {
                         'entry': price, 'size': size, 'time': time.time(),
-                        'tp': price * 1.005, 'sl': price * 0.997
+                        'tp': price * 1.004, 'sl': price * 0.996
                     }
-                    await self.send_tg(f"🎯 <b>Scalp Entry:</b> {best_sym} (Prob: {best_prob:.2f})")
+                    self.cash = 0 # All in
+                    await self.send_tg(f"⚡ <b>SCALP BUY:</b> {best_sym}\nProb: {best_prob:.2f}")
 
-            await asyncio.sleep(10)
+            # Live Dashboard Update
+            net_val = (self.cash if not self.positions else 0) + (self.positions[list(self.positions.keys())[0]]['size'] * (await self.exchange.fetch_ticker(list(self.positions.keys())[0]))['last'] if self.positions else 0)
+            status = f"💰 <b>LIVE DASHBOARD</b>\nCash: ${self.cash + (float_pnl if self.positions else 0):.2f}\nNet PnL: {self.realized_pnl:+.4f}\nStatus: {'TRADING' if self.positions else 'SCANNING'}"
+            await self.send_tg(status, edit=True)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(Bot3Scalper().run_scalper())
