@@ -13,6 +13,11 @@
       "deploy": {
         "startCommand": "python bot2.py"
       }
+    },
+    "super": {
+      "deploy": {
+        "startCommand": "python bot3.py"
+      }
     }
   }
 }
