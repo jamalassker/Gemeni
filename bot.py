@@ -31,7 +31,7 @@ class ProSniperV7:
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.models = {}
         self.positions = {}
-        self.cash = 10.00  # Updated to reflect your current balance
+        self.cash = 100  # Updated to reflect your current balance
         self.realized_pnl = 0.0
         self.total_fees = 0.0
         self.report_id = None
