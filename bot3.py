@@ -9,10 +9,7 @@ import ccxt.async_support as ccxt
 # ================= CONFIG =================
 SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", 
-    "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT",
-    "SHIB/USDT", "NEAR/USDT", "APT/USDT", "SUI/USDT", "PEPE/USDT",
-    "FET/USDT", "RENDER/USDT", "WIF/USDT", "TIA/USDT", "ARB/USDT"
-]
+    
 
 TIMEFRAME = "1m"
 MAX_POSITIONS = 1
