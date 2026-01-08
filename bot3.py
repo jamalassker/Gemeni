@@ -19,8 +19,8 @@ MIN_PROB = 0.52        # Looser entry for higher activity
 TAKER_FEE = 0.001      # 0.1% Binance fee
 MIN_WIN_PCT = 0.003    # Aiming for 0.3% per scalp (Fast growth)
 
-TG_TOKEN = "8488789199:AAHhViKmhXlvE7WpgZGVDS4WjCjUuBVtqzQ"
-TG_CHAT = "5665906172"
+TG_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
+TG_CHAT = "8287625785"
 
 class Bot3Scalper:
     def __init__(self):
