@@ -39,8 +39,8 @@ class Config:
     """All configuration settings in one place"""
     
     # Telegram Configuration
-    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '5665906172')
     
     # Exchange Configuration
     EXCHANGE = 'binance'
