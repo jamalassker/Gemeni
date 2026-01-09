@@ -1,4 +1,4 @@
-# deep_learning_scalping_bot.py
+# deep_lea# deep_learning_scalping_bot.py
 """
 Deep Learning Scalping Bot with Neural Network Predictions
 Monitors 20 Most Volatile Cryptocurrencies
@@ -214,10 +214,25 @@ class DeepLearningPredictor:
                 df[f'sma_{window}'] = df['close'].rolling(window=window).mean()
                 df[f'ema_{window}'] = df['close'].ewm(span=window).mean()
             
-            # Price position relative to MAs
+            # Price position relative to MAs - تأكد من وجود الأعمدة أولاً
             for window in [5, 10, 20]:
-                df[f'price_sma_{window}_ratio'] = df['close'] / df[f'sma_{window}']
-                df[f'price_ema_{window}_ratio'] = df['close'] / df[f'ema_{window}']
+                sma_col = f'sma_{window}'
+                ema_col = f'ema_{window}'
+                
+                # تحقق من وجود العمود قبل استخدامه
+                if sma_col in df.columns:
+                    # استبدل الصفر بـ NaN لتجنب القسمة على الصفر
+                    df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan)
+                else:
+                    # إذا لم يكن موجوداً، أنشئه الآن
+                    df[sma_col] = df['close'].rolling(window=window).mean()
+                    df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan)
+                
+                if ema_col in df.columns:
+                    df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan)
+                else:
+                    df[ema_col] = df['close'].ewm(span=window).mean()
+                    df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan)
             
             # RSI variations
             for period in [7, 14, 21]:
@@ -285,6 +300,10 @@ class DeepLearningPredictor:
             
             # Fill NaN values
             df = df.fillna(method='bfill').fillna(method='ffill')
+            
+            # معالجة إضافية للقيم اللانهائية
+            df = df.replace([np.inf, -np.inf], np.nan)
+            df = df.fillna(0)
             
             return df
             
@@ -375,6 +394,19 @@ class DeepLearningPredictor:
                 logger.warning(f"Insufficient data for {symbol}")
                 return
             
+            # تنظيف البيانات من NaN قبل التدريب
+            if np.any(np.isnan(X)) or np.any(np.isnan(y)):
+                logger.warning(f"Found NaN values for {symbol}, cleaning data...")
+                
+                # احذف الصفوف التي تحتوي NaN
+                mask = ~(np.isnan(X).any(axis=1) | np.isnan(y))
+                X = X[mask]
+                y = y[mask]
+                
+                if len(X) < 30:  # تحقق من وجود بيانات كافية بعد التنظيف
+                    logger.warning(f"Insufficient clean data for {symbol} after NaN removal")
+                    return
+            
             # Scale features
             scaler = MinMaxScaler()
             X_scaled = scaler.fit_transform(X)
@@ -398,7 +430,8 @@ class DeepLearningPredictor:
                     n_estimators=100,
                     max_depth=5,
                     learning_rate=0.1,
-                    random_state=42
+                    random_state=42,
+                    subsample=0.8
                 )
             }
             
@@ -1535,10 +1568,24 @@ class TelegramNotifier:
     def __init__(self):
         self.token = UltimateConfig.TELEGRAM_BOT_TOKEN
         self.chat_id = UltimateConfig.TELEGRAM_CHAT_ID
+        
+        # التحقق الصحيح من Chat ID
         self.enabled = UltimateConfig.TELEGRAM_ENABLED and self.token and self.chat_id
         
         if self.enabled:
-            logger.info("Telegram Notifier initialized")
+            # التحقق من أن Chat ID ليس ID بوت
+            try:
+                # استخرج البوت ID من التوكن
+                bot_id_from_token = str(self.token).split(':')[0].strip() if ':' in str(self.token) else ''
+                chat_id_str = str(self.chat_id).strip()
+                
+                if bot_id_from_token and chat_id_str == bot_id_from_token:
+                    self.enabled = False
+                    logger.warning("Telegram disabled: Chat ID appears to be a bot ID")
+                else:
+                    logger.info("Telegram Notifier initialized")
+            except:
+                logger.info("Telegram Notifier initialized")
         else:
             logger.info("Telegram Notifier disabled")
     
