@@ -86,7 +86,7 @@ class AdvancedConfig:
     AI_TRAIN_INTERVAL = 100  # Retrain every 100 cycles
     
     # Telegram (Optional)
-    TELEGRAM_ENABLED = False
+    TELEGRAM_ENABLED = True
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
     
