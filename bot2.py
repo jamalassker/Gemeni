@@ -45,7 +45,7 @@ class UltimateConfig:
     # Top 20 most volatile cryptocurrencies (based on historical data)
     SYMBOLS = [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
-        'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT',
+        'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT',
         'SHIB/USDT', 'TRX/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT',
         'LTC/USDT', 'ETC/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT'
     ]
