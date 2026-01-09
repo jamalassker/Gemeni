@@ -50,7 +50,7 @@ class Config:
     DATABASE_PATH = '/data/trading_bot.db' if 'RAILWAY_ENVIRONMENT' in os.environ else 'trading_bot.db'
     
     # Telegram Configuration (Optional)
-    TELEGRAM_ENABLED = False  # Disabled to simplify
+    TELEGRAM_ENABLED = True  # Disabled to simplify
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
     
