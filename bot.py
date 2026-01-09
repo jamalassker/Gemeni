@@ -1,8 +1,7 @@
-# scalping_bot.py
+# bot.py
 """
 Complete Scalping Trading Bot for Binance with Telegram Integration
-Author: Trading Bot System
-Version: 1.0
+Optimized for Railway Deployment
 """
 
 import os
@@ -22,10 +21,12 @@ import ccxt
 import ta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
+from telegram.error import RetryAfter, TimedOut, NetworkError
 from dotenv import load_dotenv
 import threading
 import signal
 import sys
+import aiohttp
 
 # Load environment variables
 load_dotenv()
@@ -38,20 +39,20 @@ class Config:
     """All configuration settings in one place"""
     
     # Telegram Configuration
-    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA')
-    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID',  '5665906172')
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
     
     # Exchange Configuration
     EXCHANGE = 'binance'
-    SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
-    TIMEFRAME = '1m'
+    SYMBOLS = ['BTC/USDT', 'ETH/USDT']  # Reduced to 2 symbols for better performance
+    TIMEFRAME = '5m'  # Changed to 5m for less frequent signals
     
     # Risk Management
     INITIAL_CAPITAL = 100.0
-    RISK_PER_TRADE = 0.02  # 2%
-    MAX_DAILY_LOSS = 0.05  # 5%
-    MAX_POSITION_SIZE = 0.95  # 95% of capital
-    MAX_OPEN_TRADES = 3
+    RISK_PER_TRADE = 0.015  # Reduced to 1.5%
+    MAX_DAILY_LOSS = 0.03  # Reduced to 3%
+    MAX_POSITION_SIZE = 0.90  # 90% of capital
+    MAX_OPEN_TRADES = 2  # Reduced max open trades
     
     # Fees & Spread
     MAKER_FEE = 0.001  # 0.1%
@@ -61,182 +62,239 @@ class Config:
     SLIPPAGE_PCT = 0.0005  # 0.05%
     
     # Strategy Parameters
-    TAKE_PROFIT_PCT = 0.003  # 0.3%
-    STOP_LOSS_PCT = 0.002  # 0.2%
+    TAKE_PROFIT_PCT = 0.002  # Reduced to 0.2%
+    STOP_LOSS_PCT = 0.0015  # Reduced to 0.15%
     RSI_PERIOD = 14
-    RSI_OVERBOUGHT = 70
-    RSI_OVERSOLD = 30
+    RSI_OVERBOUGHT = 72  # Adjusted
+    RSI_OVERSOLD = 28  # Adjusted
     BB_PERIOD = 20
-    BB_STD = 2.0
+    BB_STD = 1.8  # Reduced for more signals
     VOLUME_MA_PERIOD = 20
-    MIN_VOLUME_RATIO = 1.5
+    MIN_VOLUME_RATIO = 1.3  # Reduced
     
     # Execution
-    TRADE_COOLDOWN = 30  # seconds
-    CHECK_INTERVAL = 30  # seconds
-    MAX_TRADE_DURATION = 600  # seconds (10 minutes)
+    TRADE_COOLDOWN = 60  # Increased to 60 seconds
+    CHECK_INTERVAL = 45  # Increased to 45 seconds
+    MAX_TRADE_DURATION = 300  # Reduced to 5 minutes
     
     # Bot Settings
     LOG_LEVEL = 'INFO'
-    DATABASE_PATH = 'trading_bot.db'
-    PAPER_TRADING = True  # Set to False for real trading
+    DATABASE_PATH = '/data/trading_bot.db' if 'RAILWAY_ENVIRONMENT' in os.environ else 'trading_bot.db'
+    PAPER_TRADING = True
+    RAILWAY_DEPLOYMENT = 'RAILWAY_ENVIRONMENT' in os.environ
     
-# ============================================================================
-# DATA CLASSES & ENUMS
-# ============================================================================
-
-class SignalType(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
-
-@dataclass
-class TradeSignal:
-    symbol: str
-    signal: SignalType
-    price: float
-    stop_loss: float
-    take_profit: float
-    confidence: float
-    reason: str
-    timestamp: datetime
-
-@dataclass
-class TradeRecord:
-    symbol: str
-    side: str
-    entry_price: float
-    exit_price: Optional[float]
-    size: float
-    entry_time: datetime
-    exit_time: Optional[datetime]
-    fees: float
-    pnl: float = 0
-    pnl_pct: float = 0
-    status: str = 'open'
-    reason: Optional[str] = None
-
-@dataclass
-class MarketData:
-    symbol: str
-    bid: float
-    ask: float
-    last: float
-    volume: float
-    spread_pct: float
-    timestamp: datetime
+    # Telegram Rate Limiting
+    TELEGRAM_MAX_RETRIES = 3
+    TELEGRAM_RETRY_DELAY = 2
+    TELEGRAM_BATCH_DELAY = 1  # Delay between messages
+    
+    # Health Check
+    HEALTH_CHECK_PORT = int(os.getenv('PORT', 8080))
+    HEALTH_CHECK_INTERVAL = 300  # 5 minutes
 
 # ============================================================================
-# LOGGING SETUP
+# ENHANCED LOGGING
 # ============================================================================
 
-class CustomFormatter(logging.Formatter):
-    """Custom log formatter with colors"""
-    grey = "\x1b[38;20m"
-    green = "\x1b[32;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-    FORMATS = {
-        logging.DEBUG: grey + format_str + reset,
-        logging.INFO: green + format_str + reset,
-        logging.WARNING: yellow + format_str + reset,
-        logging.ERROR: red + format_str + reset,
-        logging.CRITICAL: bold_red + format_str + reset
-    }
-
+class RailwayFormatter(logging.Formatter):
+    """Custom formatter for Railway logs"""
+    
     def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
+        # Add timestamp and level
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        level = record.levelname
+        message = super().format(record)
+        
+        # Color codes for Railway
+        colors = {
+            'DEBUG': '\033[36m',    # Cyan
+            'INFO': '\033[32m',     # Green
+            'WARNING': '\033[33m',  # Yellow
+            'ERROR': '\033[31m',    # Red
+            'CRITICAL': '\033[41m'  # Red background
+        }
+        
+        reset = '\033[0m'
+        color = colors.get(level, '\033[37m')  # Default white
+        
+        return f"{color}{timestamp} - {level:8s} - {record.name}: {record.getMessage()}{reset}"
 
-# Setup logging
+# Setup enhanced logging
 logger = logging.getLogger('ScalpingBot')
 logger.setLevel(getattr(logging, Config.LOG_LEVEL))
 
-# Console handler
-ch = logging.StreamHandler()
-ch.setLevel(getattr(logging, Config.LOG_LEVEL))
-ch.setFormatter(CustomFormatter())
-logger.addHandler(ch)
+# Remove existing handlers
+logger.handlers.clear()
 
-# File handler
-fh = logging.FileHandler('scalping_bot.log')
-fh.setLevel(logging.INFO)
-file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh.setFormatter(file_formatter)
-logger.addHandler(fh)
+# Console handler for Railway
+console_handler = logging.StreamHandler()
+console_handler.setLevel(getattr(logging, Config.LOG_LEVEL))
+console_handler.setFormatter(RailwayFormatter())
+logger.addHandler(console_handler)
+
+# File handler for persistent logs
+try:
+    file_handler = logging.FileHandler('scalping_bot.log')
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+except Exception as e:
+    logger.warning(f"Could not create file handler: {e}")
 
 # ============================================================================
-# DATABASE MANAGER
+# HEALTH CHECK SERVER
+# ============================================================================
+
+class HealthCheckServer:
+    """Simple HTTP server for health checks"""
+    
+    def __init__(self, port: int = Config.HEALTH_CHECK_PORT):
+        self.port = port
+        self.server = None
+        self.running = False
+    
+    async def start(self):
+        """Start the health check server"""
+        try:
+            import aiohttp
+            from aiohttp import web
+            
+            app = web.Application()
+            
+            # Health check endpoint
+            async def health_check(request):
+                return web.Response(text='OK', status=200)
+            
+            # Bot status endpoint
+            async def status_check(request):
+                data = {
+                    'status': 'running',
+                    'timestamp': datetime.now().isoformat(),
+                    'deployment': 'railway' if Config.RAILWAY_DEPLOYMENT else 'local'
+                }
+                return web.json_response(data)
+            
+            app.router.add_get('/health', health_check)
+            app.router.add_get('/status', status_check)
+            
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', self.port)
+            await site.start()
+            
+            self.server = runner
+            self.running = True
+            logger.info(f"Health check server started on port {self.port}")
+            
+        except ImportError:
+            logger.warning("aiohttp not installed, health check server disabled")
+        except Exception as e:
+            logger.error(f"Failed to start health check server: {e}")
+    
+    async def stop(self):
+        """Stop the health check server"""
+        if self.server:
+            await self.server.cleanup()
+            self.running = False
+            logger.info("Health check server stopped")
+
+# ============================================================================
+# DATABASE MANAGER WITH RAILWAY SUPPORT
 # ============================================================================
 
 class Database:
-    """SQLite database manager"""
+    """SQLite database manager with Railway support"""
     
     def __init__(self, db_path: str = Config.DATABASE_PATH):
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        
         self.db_path = db_path
         self.init_database()
     
     def init_database(self):
         """Initialize database tables"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Trades table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    side TEXT NOT NULL,
-                    entry_price REAL NOT NULL,
-                    exit_price REAL,
-                    size REAL NOT NULL,
-                    fees REAL NOT NULL,
-                    pnl REAL,
-                    pnl_pct REAL,
-                    entry_time TIMESTAMP NOT NULL,
-                    exit_time TIMESTAMP,
-                    status TEXT NOT NULL,
-                    reason TEXT,
-                    metadata TEXT
-                )
-            ''')
-            
-            # Signals table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    signal TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    confidence REAL,
-                    reason TEXT,
-                    timestamp TIMESTAMP NOT NULL,
-                    executed BOOLEAN DEFAULT FALSE
-                )
-            ''')
-            
-            # Performance table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS performance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATE NOT NULL,
-                    total_trades INTEGER,
-                    winning_trades INTEGER,
-                    total_pnl REAL,
-                    win_rate REAL,
-                    best_trade REAL,
-                    worst_trade REAL,
-                    avg_trade_duration TEXT
-                )
-            ''')
-            
-            conn.commit()
-            logger.info("Database initialized")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Trades table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        entry_price REAL NOT NULL,
+                        exit_price REAL,
+                        size REAL NOT NULL,
+                        fees REAL NOT NULL,
+                        pnl REAL,
+                        pnl_pct REAL,
+                        entry_time TIMESTAMP NOT NULL,
+                        exit_time TIMESTAMP,
+                        status TEXT NOT NULL,
+                        reason TEXT,
+                        metadata TEXT
+                    )
+                ''')
+                
+                # Signals table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS signals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        symbol TEXT NOT NULL,
+                        signal TEXT NOT NULL,
+                        price REAL NOT NULL,
+                        confidence REAL,
+                        reason TEXT,
+                        timestamp TIMESTAMP NOT NULL,
+                        executed BOOLEAN DEFAULT FALSE
+                    )
+                ''')
+                
+                # Performance table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS performance (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date DATE NOT NULL,
+                        total_trades INTEGER,
+                        winning_trades INTEGER,
+                        total_pnl REAL,
+                        win_rate REAL,
+                        best_trade REAL,
+                        worst_trade REAL,
+                        avg_trade_duration TEXT
+                    )
+                ''')
+                
+                # Bot stats table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS bot_stats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TIMESTAMP NOT NULL,
+                        capital REAL NOT NULL,
+                        open_trades INTEGER,
+                        daily_pnl REAL,
+                        total_pnl REAL
+                    )
+                ''')
+                
+                conn.commit()
+                logger.info(f"Database initialized at {self.db_path}")
+                
+                # Create indexes for better performance
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_time ON trades(entry_time)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_signals_time ON signals(timestamp)')
+                
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            # Fallback to in-memory database
+            self.db_path = ':memory:'
+            logger.info("Using in-memory database as fallback")
     
     def save_trade(self, trade_data: Dict):
         """Save trade to database"""
@@ -266,462 +324,145 @@ class Database:
                 ))
                 
                 conn.commit()
-                logger.debug(f"Trade saved to database: {trade_data['symbol']}")
         except Exception as e:
             logger.error(f"Error saving trade to database: {e}")
     
-    def get_recent_trades(self, limit: int = 20) -> List[Dict]:
-        """Get recent trades from database"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                
-                cursor.execute('''
-                    SELECT * FROM trades 
-                    ORDER BY entry_time DESC 
-                    LIMIT ?
-                ''', (limit,))
-                
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
-        except Exception as e:
-            logger.error(f"Error fetching trades from database: {e}")
-            return []
-    
-    def get_daily_stats(self, date: datetime = None) -> Dict:
-        """Get daily statistics"""
-        if date is None:
-            date = datetime.now()
-        
-        date_str = date.strftime('%Y-%m-%d')
-        
+    def save_bot_stats(self, capital: float, open_trades: int, daily_pnl: float, total_pnl: float):
+        """Save bot statistics"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
                 cursor.execute('''
-                    SELECT * FROM trades 
-                    WHERE DATE(entry_time) = ? 
-                    AND status = 'closed'
-                ''', (date_str,))
+                    INSERT INTO bot_stats 
+                    (timestamp, capital, open_trades, daily_pnl, total_pnl)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    datetime.now(),
+                    capital,
+                    open_trades,
+                    daily_pnl,
+                    total_pnl
+                ))
                 
-                trades = cursor.fetchall()
-                
-                if not trades:
-                    return {}
-                
-                # Calculate statistics
-                winning_trades = [t for t in trades if t[7] and t[7] > 0]
-                
-                return {
-                    'date': date_str,
-                    'total_trades': len(trades),
-                    'winning_trades': len(winning_trades),
-                    'win_rate': len(winning_trades) / len(trades) if trades else 0,
-                    'total_pnl': sum(t[7] or 0 for t in trades),
-                    'best_trade': max((t[7] or 0 for t in trades), default=0),
-                    'worst_trade': min((t[7] or 0 for t in trades), default=0)
-                }
+                conn.commit()
         except Exception as e:
-            logger.error(f"Error getting daily stats: {e}")
-            return {}
+            logger.error(f"Error saving bot stats: {e}")
 
 # ============================================================================
-# EXCHANGE HANDLER
+# ENHANCED EXCHANGE HANDLER
 # ============================================================================
 
 class ExchangeHandler:
-    """Handle all exchange operations using CCXT"""
+    """Enhanced exchange handler with better error handling"""
     
     def __init__(self, exchange_id: str = Config.EXCHANGE):
         self.exchange = getattr(ccxt, exchange_id)({
             'enableRateLimit': True,
+            'timeout': 30000,
             'options': {
                 'defaultType': 'spot',
                 'adjustForTimeDifference': True,
             }
         })
         self.symbols = Config.SYMBOLS
+        self.last_fetch = {}
+        self.cache = {}
+        self.cache_timeout = 2  # Cache for 2 seconds
         logger.info(f"Exchange handler initialized for {exchange_id}")
     
-    def get_ticker(self, symbol: str) -> Optional[MarketData]:
-        """Get real-time ticker data"""
+    async def get_ticker_async(self, symbol: str) -> Optional[Dict]:
+        """Get ticker data with async support"""
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
+            # Check cache
+            current_time = time.time()
+            if symbol in self.cache and current_time - self.last_fetch.get(symbol, 0) < self.cache_timeout:
+                return self.cache[symbol]
             
-            bid = ticker['bid']
-            ask = ticker['ask']
-            last = ticker['last']
-            spread_pct = (ask - bid) / bid if bid > 0 else 0
+            # Fetch new data
+            ticker = await asyncio.to_thread(self.exchange.fetch_ticker, symbol)
             
-            return MarketData(
-                symbol=symbol,
-                bid=bid,
-                ask=ask,
-                last=last,
-                volume=ticker['quoteVolume'] or 0,
-                spread_pct=spread_pct,
-                timestamp=datetime.now()
-            )
+            # Update cache
+            self.cache[symbol] = ticker
+            self.last_fetch[symbol] = current_time
+            
+            return ticker
+            
         except Exception as e:
             logger.error(f"Error fetching ticker for {symbol}: {e}")
             return None
     
     def get_ohlcv(self, symbol: str, timeframe: str = Config.TIMEFRAME, limit: int = 100) -> Optional[pd.DataFrame]:
-        """Get OHLCV data"""
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            
-            df = pd.DataFrame(
-                ohlcv,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            return df
-        except Exception as e:
-            logger.error(f"Error fetching OHLCV for {symbol}: {e}")
-            return None
-    
-    def calculate_fees(self, symbol: str, amount: float, price: float, is_buy: bool) -> Dict:
-        """Calculate trading fees with spread consideration"""
-        ticker = self.get_ticker(symbol)
-        if not ticker:
-            return {'total_fee': 0, 'effective_price': price}
-        
-        # Consider spread for execution price
-        if is_buy:
-            execution_price = ticker.ask  # Buying at ask price
-        else:
-            execution_price = ticker.bid  # Selling at bid price
-        
-        # Calculate fees
-        fee_rate = Config.TAKER_FEE
-        fee_amount = amount * execution_price * fee_rate
-        
-        # Consider slippage
-        slippage = execution_price * Config.SLIPPAGE_PCT
-        effective_price = execution_price + (slippage if is_buy else -slippage)
-        
-        return {
-            'execution_price': execution_price,
-            'effective_price': effective_price,
-            'fee_amount': fee_amount,
-            'fee_rate': fee_rate,
-            'spread_pct': ticker.spread_pct,
-            'slippage': slippage
-        }
-    
-    def get_order_book(self, symbol: str, limit: int = 10) -> Optional[Dict]:
-        """Get order book for spread analysis"""
-        try:
-            orderbook = self.exchange.fetch_order_book(symbol, limit)
-            return orderbook
-        except Exception as e:
-            logger.error(f"Error fetching order book for {symbol}: {e}")
-            return None
+        """Get OHLCV data with retry logic"""
+        for attempt in range(3):
+            try:
+                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                
+                df = pd.DataFrame(
+                    ohlcv,
+                    columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                )
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                return df
+            except Exception as e:
+                if attempt < 2:
+                    logger.warning(f"Retry {attempt + 1} for {symbol}: {e}")
+                    time.sleep(1)
+                else:
+                    logger.error(f"Error fetching OHLCV for {symbol}: {e}")
+                    return None
     
     def check_market_conditions(self, symbol: str) -> Dict:
         """Check if market conditions are suitable for scalping"""
-        ticker = self.get_ticker(symbol)
-        if not ticker:
-            return {'suitable': False, 'reason': 'No ticker data'}
-        
-        # Check spread
-        if ticker.spread_pct > Config.MAX_SPREAD_PCT:
-            return {'suitable': False, 'reason': f'Spread too high: {ticker.spread_pct:.4%}'}
-        
-        # Check minimum spread
-        if ticker.spread_pct < Config.MIN_SPREAD_PCT:
-            return {'suitable': False, 'reason': f'Spread too low for profit: {ticker.spread_pct:.4%}'}
-        
-        # Check volume
-        if ticker.volume < 1000000:  # Minimum $1M volume
-            return {'suitable': False, 'reason': f'Volume too low: ${ticker.volume:,.0f}'}
-        
-        # Check order book depth
-        orderbook = self.get_order_book(symbol, 5)
-        if orderbook:
-            bid_depth = sum([bid[1] for bid in orderbook['bids'][:3]])
-            ask_depth = sum([ask[1] for ask in orderbook['asks'][:3]])
-            if bid_depth < 1 or ask_depth < 1:
-                return {'suitable': False, 'reason': 'Insufficient order book depth'}
-        
-        return {
-            'suitable': True,
-            'spread': ticker.spread_pct,
-            'volume': ticker.volume,
-            'bid': ticker.bid,
-            'ask': ticker.ask
-        }
-
-# ============================================================================
-# TRADING STRATEGY
-# ============================================================================
-
-class ScalpingStrategy:
-    """Mean reversion scalping strategy"""
-    
-    def __init__(self):
-        self.signals_history = []
-        logger.info("Scalping strategy initialized")
-    
-    def analyze(self, df: pd.DataFrame, symbol: str) -> Optional[TradeSignal]:
-        """Analyze market data and generate signals"""
-        if len(df) < 50:
-            return None
-        
-        # Calculate indicators
-        df = self._add_indicators(df)
-        
-        # Get latest data
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # Check multiple conditions
-        signals = []
-        
-        # RSI strategy
-        if latest['rsi'] < Config.RSI_OVERSOLD:
-            signals.append(('RSI Oversold', 0.3))
-        elif latest['rsi'] > Config.RSI_OVERBOUGHT:
-            signals.append(('RSI Overbought', 0.3))
-        
-        # Bollinger Bands strategy
-        if latest['close'] < latest['bb_lower']:
-            signals.append(('BB Lower Band', 0.4))
-        elif latest['close'] > latest['bb_upper']:
-            signals.append(('BB Upper Band', 0.4))
-        
-        # Volume spike
-        volume_ma = df['volume'].rolling(window=Config.VOLUME_MA_PERIOD).mean().iloc[-1]
-        if latest['volume'] > volume_ma * Config.MIN_VOLUME_RATIO:
-            signals.append(('Volume Spike', 0.2))
-        
-        # Price action - crossing BB middle
-        bb_middle = df['close'].rolling(window=Config.BB_PERIOD).mean().iloc[-2]
-        if latest['close'] > bb_middle and prev['close'] <= bb_middle:
-            signals.append(('Above BB Middle', 0.3))
-        
-        # Generate final signal
-        if not signals:
-            return None
-        
-        # Calculate weighted signal
-        total_weight = sum([weight for _, weight in signals])
-        avg_confidence = total_weight / len(signals)
-        
-        # Determine signal type
-        buy_conditions = ['RSI Oversold', 'BB Lower Band', 'Above BB Middle']
-        sell_conditions = ['RSI Overbought', 'BB Upper Band']
-        
-        buy_score = sum([weight for reason, weight in signals if reason in buy_conditions])
-        sell_score = sum([weight for reason, weight in signals if reason in sell_conditions])
-        
-        if buy_score > sell_score and buy_score > 0.3:
-            signal_type = SignalType.BUY
-            price = latest['close']
-            stop_loss = price * (1 - Config.STOP_LOSS_PCT)
-            take_profit = price * (1 + Config.TAKE_PROFIT_PCT)
-            reason = ', '.join([r for r, _ in signals if r in buy_conditions])
-        elif sell_score > buy_score and sell_score > 0.3:
-            signal_type = SignalType.SELL
-            price = latest['close']
-            stop_loss = price * (1 + Config.STOP_LOSS_PCT)
-            take_profit = price * (1 - Config.TAKE_PROFIT_PCT)
-            reason = ', '.join([r for r, _ in signals if r in sell_conditions])
-        else:
-            return None
-        
-        # Ensure minimum profit after fees
-        potential_profit = abs(take_profit - price)
-        if potential_profit / price < Config.MAKER_FEE * 3:  # Need 3x fees as profit
-            return None
-        
-        signal = TradeSignal(
-            symbol=symbol,
-            signal=signal_type,
-            price=price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            confidence=avg_confidence,
-            reason=reason,
-            timestamp=latest.name
-        )
-        
-        self.signals_history.append(signal)
-        return signal
-    
-    def _add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add technical indicators to dataframe"""
-        # RSI
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=Config.RSI_PERIOD).rsi()
-        
-        # Bollinger Bands
-        bb = ta.volatility.BollingerBands(df['close'], window=Config.BB_PERIOD, window_dev=Config.BB_STD)
-        df['bb_upper'] = bb.bollinger_hband()
-        df['bb_middle'] = bb.bollinger_mavg()
-        df['bb_lower'] = bb.bollinger_lband()
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-        
-        # Volume
-        df['volume_ma'] = df['volume'].rolling(window=Config.VOLUME_MA_PERIOD).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
-        
-        # Price momentum
-        df['returns'] = df['close'].pct_change()
-        df['volatility'] = df['returns'].rolling(20).std()
-        
-        return df
-    
-    def calculate_position_size(self, capital: float, entry_price: float, stop_loss: float) -> float:
-        """Calculate position size based on risk"""
-        risk_amount = capital * Config.RISK_PER_TRADE
-        price_risk = abs(entry_price - stop_loss)
-        
-        if price_risk == 0:
-            return 0
-        
-        position_size = risk_amount / price_risk
-        
-        # Apply max position size limit
-        max_size = capital * Config.MAX_POSITION_SIZE / entry_price
-        position_size = min(position_size, max_size)
-        
-        # Consider fees
-        estimated_fees = position_size * entry_price * Config.TAKER_FEE * 2
-        if estimated_fees > risk_amount * 0.1:
-            position_size *= 0.9
-        
-        return round(position_size, 6)  # Round to 6 decimal places
-
-# ============================================================================
-# RISK MANAGER
-# ============================================================================
-
-class RiskManager:
-    """Manage trading risk and position sizing"""
-    
-    def __init__(self):
-        self.trades: List[TradeRecord] = []
-        self.daily_pnl = 0
-        self.daily_trades = 0
-        self.daily_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        logger.info("Risk manager initialized")
-    
-    def can_trade(self, symbol: str, capital: float) -> Dict:
-        """Check if trading is allowed"""
-        # Check daily loss limit
-        daily_loss_limit = Config.INITIAL_CAPITAL * Config.MAX_DAILY_LOSS
-        if self.daily_pnl <= -daily_loss_limit:
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            
+            if not ticker or ticker['bid'] is None or ticker['ask'] is None:
+                return {'suitable': False, 'reason': 'Invalid ticker data'}
+            
+            bid = ticker['bid']
+            ask = ticker['ask']
+            spread_pct = (ask - bid) / bid if bid > 0 else 0
+            
+            # Check spread
+            if spread_pct > Config.MAX_SPREAD_PCT:
+                return {'suitable': False, 'reason': f'Spread too high: {spread_pct:.4%}'}
+            
+            # Check volume
+            volume = ticker['quoteVolume'] or 0
+            if volume < 500000:  # Minimum $500k volume
+                return {'suitable': False, 'reason': f'Volume too low: ${volume:,.0f}'}
+            
             return {
-                'allowed': False,
-                'reason': f'Daily loss limit reached: ${self.daily_pnl:.2f}'
+                'suitable': True,
+                'spread': spread_pct,
+                'volume': volume,
+                'bid': bid,
+                'ask': ask,
+                'last': ticker['last']
             }
-        
-        # Check open trades
-        open_trades = [t for t in self.trades if t.status == 'open']
-        if len(open_trades) >= Config.MAX_OPEN_TRADES:
-            return {
-                'allowed': False,
-                'reason': f'Max open trades reached: {len(open_trades)}'
-            }
-        
-        # Check if same symbol already traded recently
-        recent_trades = [t for t in self.trades 
-                        if t.symbol == symbol 
-                        and t.entry_time > datetime.now() - timedelta(seconds=Config.TRADE_COOLDOWN)]
-        if recent_trades:
-            return {
-                'allowed': False,
-                'reason': f'Recent trade on {symbol} within cooldown period'
-            }
-        
-        return {'allowed': True, 'reason': 'OK'}
-    
-    def record_trade(self, trade: TradeRecord):
-        """Record a new trade"""
-        self.trades.append(trade)
-        self.daily_trades += 1
-        logger.info(f"Trade recorded: {trade.symbol} {trade.side} at ${trade.entry_price:.2f}")
-    
-    def update_trade(self, symbol: str, exit_price: float, exit_time: datetime, reason: str = 'manual'):
-        """Update trade when closed"""
-        open_trades = [t for t in self.trades if t.symbol == symbol and t.status == 'open']
-        
-        if not open_trades:
-            return None
-        
-        trade = open_trades[0]
-        trade.exit_price = exit_price
-        trade.exit_time = exit_time
-        trade.status = 'closed'
-        trade.reason = reason
-        
-        # Calculate P&L with fees
-        if trade.side == 'BUY':
-            trade.pnl = (exit_price - trade.entry_price) * trade.size - trade.fees
-        else:  # SELL
-            trade.pnl = (trade.entry_price - exit_price) * trade.size - trade.fees
-        
-        trade.pnl_pct = trade.pnl / (trade.entry_price * trade.size)
-        
-        # Update daily P&L
-        self.daily_pnl += trade.pnl
-        
-        logger.info(f"Trade closed: {symbol} {trade.side} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.2%})")
-        return trade
-    
-    def get_daily_stats(self) -> Dict:
-        """Get daily trading statistics"""
-        today_trades = [t for t in self.trades if t.entry_time.date() == datetime.now().date()]
-        
-        if not today_trades:
-            return {}
-        
-        closed_trades = [t for t in today_trades if t.status == 'closed']
-        winning_trades = [t for t in closed_trades if t.pnl > 0]
-        
-        total_pnl = sum(t.pnl for t in closed_trades)
-        win_rate = len(winning_trades) / len(closed_trades) if closed_trades else 0
-        
-        # Calculate average trade duration
-        durations = []
-        for trade in closed_trades:
-            if trade.exit_time and trade.entry_time:
-                duration = (trade.exit_time - trade.entry_time).total_seconds()
-                durations.append(duration)
-        
-        avg_duration = sum(durations) / len(durations) if durations else 0
-        
-        return {
-            'total_trades': len(today_trades),
-            'closed_trades': len(closed_trades),
-            'winning_trades': len(winning_trades),
-            'win_rate': win_rate,
-            'total_pnl': total_pnl,
-            'pnl_pct': total_pnl / Config.INITIAL_CAPITAL,
-            'avg_pnl': total_pnl / len(closed_trades) if closed_trades else 0,
-            'best_trade': max((t.pnl for t in closed_trades), default=0),
-            'worst_trade': min((t.pnl for t in closed_trades), default=0),
-            'avg_duration': f"{avg_duration:.0f}s",
-            'daily_pnl': self.daily_pnl
-        }
+            
+        except Exception as e:
+            logger.error(f"Error checking market conditions for {symbol}: {e}")
+            return {'suitable': False, 'reason': f'Error: {str(e)}'}
 
 # ============================================================================
-# TELEGRAM BOT
+# ENHANCED TELEGRAM BOT WITH RATE LIMITING
 # ============================================================================
 
 class TelegramBot:
-    """Telegram bot for alerts and control"""
+    """Enhanced Telegram bot with rate limiting and error handling"""
     
     def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id
         self.application = None
         self.bot_running = False
+        self.message_queue = asyncio.Queue()
+        self.processor_task = None
+        self.rate_limiter = RateLimiter(max_calls=20, period=60)  # 20 messages per minute
         logger.info("Telegram bot initialized")
     
     async def start(self):
@@ -731,6 +472,7 @@ class TelegramBot:
             return
         
         try:
+            # Configure application with better settings
             self.application = Application.builder().token(self.token).build()
             
             # Add command handlers
@@ -738,215 +480,286 @@ class TelegramBot:
             self.application.add_handler(CommandHandler("status", self.status_command))
             self.application.add_handler(CommandHandler("trades", self.trades_command))
             self.application.add_handler(CommandHandler("pnl", self.pnl_command))
-            self.application.add_handler(CommandHandler("stop", self.stop_command))
-            self.application.add_handler(CommandHandler("resume", self.resume_command))
+            self.application.add_handler(CommandHandler("help", self.help_command))
+            
+            # Start message processor
+            self.processor_task = asyncio.create_task(self._process_message_queue())
             
             # Start bot
             await self.application.initialize()
             await self.application.start()
-            await self.application.updater.start_polling()
+            await self.application.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
             
             self.bot_running = True
             logger.info("Telegram bot started successfully")
+            
+            # Send startup message (delayed to avoid rate limiting)
+            await asyncio.sleep(2)
+            await self.queue_message('startup', {
+                'capital': Config.INITIAL_CAPITAL,
+                'symbols': Config.SYMBOLS,
+                'mode': 'Paper Trading' if Config.PAPER_TRADING else 'Live Trading'
+            })
             
         except Exception as e:
             logger.error(f"Failed to start Telegram bot: {e}")
     
     async def stop(self):
         """Stop the Telegram bot"""
+        if self.processor_task:
+            self.processor_task.cancel()
+        
         if self.application:
             await self.application.stop()
             self.bot_running = False
             logger.info("Telegram bot stopped")
     
+    async def _process_message_queue(self):
+        """Process messages from queue with rate limiting"""
+        while True:
+            try:
+                message_type, data = await self.message_queue.get()
+                
+                # Apply rate limiting
+                await self.rate_limiter.wait()
+                
+                if message_type == 'alert':
+                    await self._send_alert_safe(data['alert_type'], data['message'], data.get('data'))
+                elif message_type == 'startup':
+                    await self._send_startup_message(data)
+                
+                self.message_queue.task_done()
+                await asyncio.sleep(Config.TELEGRAM_BATCH_DELAY)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error processing message queue: {e}")
+                await asyncio.sleep(1)
+    
+    async def queue_message(self, message_type: str, data: Dict):
+        """Add message to queue for processing"""
+        await self.message_queue.put((message_type, data))
+    
+    async def _send_alert_safe(self, alert_type: str, message: str, data: Dict = None):
+        """Send alert with retry logic"""
+        for attempt in range(Config.TELEGRAM_MAX_RETRIES):
+            try:
+                emoji = {
+                    'trade': '📊',
+                    'signal': '🚨',
+                    'profit': '💰',
+                    'loss': '📉',
+                    'error': '⚠️',
+                    'info': 'ℹ️',
+                    'warning': '⚠️',
+                    'startup': '🚀'
+                }.get(alert_type, '📢')
+                
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                formatted_msg = f"{emoji} *{alert_type.upper()}* [{timestamp}]\n\n{message}"
+                
+                if data:
+                    formatted_msg += f"\n\n*Details:*\n"
+                    for key, value in data.items():
+                        formatted_msg += f"• {key}: {value}\n"
+                
+                await self.application.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=formatted_msg,
+                    parse_mode='Markdown',
+                    disable_notification=(alert_type not in ['signal', 'error'])
+                )
+                
+                logger.info(f"Telegram alert sent: {alert_type}")
+                return
+                
+            except RetryAfter as e:
+                retry_after = e.retry_after
+                logger.warning(f"Rate limited, retrying in {retry_after}s")
+                await asyncio.sleep(retry_after)
+                
+            except (TimedOut, NetworkError) as e:
+                logger.warning(f"Network error on attempt {attempt + 1}: {e}")
+                if attempt < Config.TELEGRAM_MAX_RETRIES - 1:
+                    await asyncio.sleep(Config.TELEGRAM_RETRY_DELAY * (attempt + 1))
+                else:
+                    logger.error(f"Failed to send alert after {Config.TELEGRAM_MAX_RETRIES} attempts")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error sending alert: {e}")
+                break
+    
+    async def _send_startup_message(self, data: Dict):
+        """Send startup message"""
+        message = "🚀 *Scalping Bot Started*\n\n"
+        message += f"*Platform:* {'Railway' if Config.RAILWAY_DEPLOYMENT else 'Local'}\n"
+        message += f"*Capital:* ${data['capital']:.2f}\n"
+        message += f"*Symbols:* {', '.join(data['symbols'])}\n"
+        message += f"*Mode:* {data['mode']}\n"
+        message += f"\n*Commands:*\n"
+        message += "/start - Start bot\n"
+        message += "/status - Check status\n"
+        message += "/trades - View trades\n"
+        message += "/pnl - Profit/Loss\n"
+        message += "/help - Show help"
+        
+        await self._send_alert_safe('startup', message)
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
-        welcome_msg = """
+        try:
+            welcome_msg = """
 🤖 *Scalping Bot Activated* 🤖
 
 *Available Commands:*
 /status - Bot status & metrics
 /trades - Recent trades
 /pnl - Profit & Loss summary
-/stop - Pause trading
-/resume - Resume trading
-
-*Alerts will be sent for:*
-✅ Trade signals
-📊 Trade executions
-💰 Profit/Loss updates
-⚠️ System warnings
-
-Bot is now monitoring markets...
-        """
-        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command"""
-        # This would be populated with real data from the main bot
-        status_msg = """
-📊 *Bot Status*
-
-*Exchange:* Binance
-*Status:* ✅ Active
-*Mode:* Paper Trading
-*Symbols:* BTC/USDT, ETH/USDT, BNB/USDT
+/help - Show help
 
 *Risk Settings:*
 Capital: $100.00
-Risk/Trade: 2%
-Daily Loss Limit: 5%
+Risk/Trade: 1.5%
+Daily Loss Limit: 3%
 
-*Last Signal:* No recent signals
-        """
-        await update.message.reply_text(status_msg, parse_mode='Markdown')
+Bot is monitoring markets...
+            """
+            await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+        except RetryAfter as e:
+            await update.message.reply_text("⚠️ Rate limited, please wait...")
+        except Exception as e:
+            logger.error(f"Error in start_command: {e}")
+    
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command"""
+        try:
+            status_msg = f"""
+📊 *Bot Status*
+
+*Platform:* {'Railway 🚂' if Config.RAILWAY_DEPLOYMENT else 'Local 💻'}
+*Status:* ✅ Active
+*Mode:* {'Paper Trading 📄' if Config.PAPER_TRADING else 'Live Trading 💰'}
+*Symbols:* {', '.join(Config.SYMBOLS)}
+*Timeframe:* {Config.TIMEFRAME}
+
+*Last Update:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+*Note:* Detailed stats available in logs.
+            """
+            await update.message.reply_text(status_msg, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error in status_command: {e}")
+            await update.message.reply_text("⚠️ Error fetching status")
     
     async def trades_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /trades command"""
-        # This would show real trades from database
-        trades_msg = """
+        try:
+            trades_msg = """
 📈 *Recent Trades*
 
-*No trades executed yet.*
+No trades executed yet.
 
-*Note:* Run the bot to see trade history.
-        """
-        await update.message.reply_text(trades_msg, parse_mode='Markdown')
+The bot is scanning for opportunities...
+            """
+            await update.message.reply_text(trades_msg, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error in trades_command: {e}")
     
     async def pnl_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pnl command"""
-        pnl_msg = """
+        try:
+            pnl_msg = """
 💰 *Profit & Loss Report*
 
-*No trading activity yet.*
+No trading activity yet.
 
-*Note:* Start trading to see P&L reports.
-        """
-        await update.message.reply_text(pnl_msg, parse_mode='Markdown')
-    
-    async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /stop command"""
-        # This would pause the trading bot
-        await update.message.reply_text("⏸️ Trading paused (not implemented in this example)")
-    
-    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /resume command"""
-        # This would resume the trading bot
-        await update.message.reply_text("▶️ Trading resumed (not implemented in this example)")
-    
-    async def send_alert(self, alert_type: str, message: str, data: Dict = None):
-        """Send alert to Telegram"""
-        if not self.bot_running:
-            return
-        
-        try:
-            emoji = {
-                'trade': '📊',
-                'signal': '🚨',
-                'profit': '💰',
-                'loss': '📉',
-                'error': '⚠️',
-                'info': 'ℹ️',
-                'warning': '⚠️'
-            }.get(alert_type, '📢')
-            
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            formatted_msg = f"{emoji} *{alert_type.upper()} Alert* [{timestamp}]\n\n{message}"
-            
-            if data:
-                formatted_msg += f"\n\n*Details:*\n"
-                for key, value in data.items():
-                    formatted_msg += f"• {key}: {value}\n"
-            
-            await self.application.bot.send_message(
-                chat_id=self.chat_id,
-                text=formatted_msg,
-                parse_mode='Markdown'
-            )
-            logger.info(f"Telegram alert sent: {alert_type}")
-            
+Start trading to see P&L reports.
+            """
+            await update.message.reply_text(pnl_msg, parse_mode='Markdown')
         except Exception as e:
-            logger.error(f"Failed to send Telegram alert: {e}")
+            logger.error(f"Error in pnl_command: {e}")
     
-    async def send_trade_signal(self, signal_data: Dict):
-        """Send trade signal alert"""
-        signal = signal_data.get('signal')
-        symbol = signal_data.get('symbol')
-        price = signal_data.get('price')
-        confidence = signal_data.get('confidence')
-        
-        emoji = '🟢' if signal == 'BUY' else '🔴'
-        message = f"{emoji} *TRADE SIGNAL*\n\n"
-        message += f"*Symbol:* {symbol}\n"
-        message += f"*Signal:* {signal}\n"
-        message += f"*Price:* ${price:,.2f}\n"
-        message += f"*Confidence:* {confidence:.1%}\n"
-        message += f"*Reason:* {signal_data.get('reason', 'N/A')}"
-        
-        await self.send_alert('signal', message)
-    
-    async def send_trade_execution(self, trade_data: Dict):
-        """Send trade execution alert"""
-        message = f"⚡ *TRADE EXECUTED*\n\n"
-        message += f"*Symbol:* {trade_data['symbol']}\n"
-        message += f"*Side:* {trade_data['side']}\n"
-        message += f"*Entry:* ${trade_data['entry_price']:,.2f}\n"
-        message += f"*Size:* {trade_data['size']:.6f}\n"
-        message += f"*Stop Loss:* ${trade_data['stop_loss']:,.2f}\n"
-        message += f"*Take Profit:* ${trade_data['take_profit']:,.2f}\n"
-        message += f"*Fees:* ${trade_data['fees']:.4f}"
-        
-        await self.send_alert('trade', message)
-    
-    async def send_pnl_update(self, pnl_data: Dict):
-        """Send P&L update"""
-        pnl = pnl_data.get('pnl', 0)
-        pnl_pct = pnl_data.get('pnl_pct', 0)
-        
-        if pnl > 0:
-            emoji = '💰'
-            alert_type = 'profit'
-            message = f"*PROFIT!* +${pnl:.2f} ({pnl_pct:.2%})"
-        else:
-            emoji = '📉'
-            alert_type = 'loss'
-            message = f"*LOSS* -${abs(pnl):.2f} ({abs(pnl_pct):.2%})"
-        
-        message += f"\n\n*Trade Details:*\n"
-        message += f"Symbol: {pnl_data.get('symbol')}\n"
-        message += f"Side: {pnl_data.get('side')}\n"
-        message += f"Duration: {pnl_data.get('duration')}\n"
-        message += f"Exit Reason: {pnl_data.get('reason')}"
-        
-        await self.send_alert(alert_type, message)
-    
-    async def send_daily_summary(self, summary_data: Dict):
-        """Send daily summary"""
-        total_pnl = summary_data.get('total_pnl', 0)
-        
-        message = f"📊 *DAILY SUMMARY*\n\n"
-        message += f"*Date:* {datetime.now().strftime('%Y-%m-%d')}\n"
-        message += f"*Total Trades:* {summary_data.get('total_trades', 0)}\n"
-        message += f"*Win Rate:* {summary_data.get('win_rate', 0):.1%}\n"
-        message += f"*Total P&L:* ${total_pnl:+.2f}\n"
-        message += f"*P&L %:* {summary_data.get('pnl_pct', 0):+.2%}\n"
-        message += f"*Best Trade:* ${summary_data.get('best_trade', 0):.2f}\n"
-        message += f"*Worst Trade:* ${summary_data.get('worst_trade', 0):.2f}\n"
-        message += f"*Avg Trade Duration:* {summary_data.get('avg_duration', 'N/A')}"
-        
-        await self.send_alert('info', message)
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        try:
+            help_msg = """
+🆘 *Help Guide*
+
+*Commands:*
+/start - Start the bot
+/status - Check bot status
+/trades - View recent trades
+/pnl - See profit/loss
+/help - This help message
+
+*Risk Management:*
+• 1.5% risk per trade
+• 3% daily loss limit
+• 90% max position size
+• 2 max open trades
+
+*Strategy:*
+• Mean Reversion Scalping
+• RSI + Bollinger Bands
+• 5-minute timeframe
+• Volume confirmation
+
+*Note:* This is a paper trading bot for educational purposes.
+            """
+            await update.message.reply_text(help_msg, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error in help_command: {e}")
 
 # ============================================================================
-# MAIN SCALPING BOT
+# RATE LIMITER
+# ============================================================================
+
+class RateLimiter:
+    """Simple rate limiter for API calls"""
+    
+    def __init__(self, max_calls: int, period: float):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = []
+    
+    async def wait(self):
+        """Wait if rate limit is exceeded"""
+        now = time.time()
+        
+        # Remove old calls
+        self.calls = [call for call in self.calls if now - call < self.period]
+        
+        if len(self.calls) >= self.max_calls:
+            # Calculate wait time
+            oldest_call = self.calls[0]
+            wait_time = self.period - (now - oldest_call)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+                now = time.time()
+        
+        # Add current call
+        self.calls.append(now)
+        
+        # Keep only recent calls
+        self.calls = [call for call in self.calls if now - call < self.period]
+
+# ============================================================================
+# MAIN BOT WITH RAILWAY OPTIMIZATIONS
 # ============================================================================
 
 class ScalpingBot:
-    """Main scalping bot class"""
+    """Main scalping bot optimized for Railway"""
     
     def __init__(self):
         self.config = Config()
         self.capital = Config.INITIAL_CAPITAL
         self.running = False
+        self.start_time = datetime.now()
         
         # Initialize components
         self.exchange = ExchangeHandler()
@@ -954,57 +767,69 @@ class ScalpingBot:
         self.risk_manager = RiskManager()
         self.database = Database()
         self.telegram_bot = TelegramBot(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
+        self.health_check = HealthCheckServer()
         
         # Performance tracking
-        self.start_time = datetime.now()
         self.total_trades = 0
         self.total_pnl = 0
+        self.cycle_count = 0
         
-        logger.info(f"Scalping Bot initialized with ${self.capital:.2f} capital")
-        logger.info(f"Trading symbols: {', '.join(Config.SYMBOLS)}")
-        logger.info(f"Paper trading mode: {Config.PAPER_TRADING}")
+        logger.info("="*60)
+        logger.info("🤖 SCALPING TRADING BOT 🤖")
+        logger.info("="*60)
+        logger.info(f"Platform: {'Railway' if Config.RAILWAY_DEPLOYMENT else 'Local'}")
+        logger.info(f"Initial Capital: ${self.capital:.2f}")
+        logger.info(f"Trading Symbols: {', '.join(Config.SYMBOLS)}")
+        logger.info(f"Paper Trading: {Config.PAPER_TRADING}")
+        logger.info(f"Risk per Trade: {Config.RISK_PER_TRADE:.1%}")
+        logger.info(f"Daily Loss Limit: {Config.MAX_DAILY_LOSS:.1%}")
+        logger.info("="*60)
     
     async def start(self):
         """Start the trading bot"""
         self.running = True
-        logger.info("Starting Scalping Bot...")
-        
-        # Start Telegram bot
-        await self.telegram_bot.start()
-        
-        # Send startup message
-        if self.telegram_bot.bot_running:
-            await self.telegram_bot.send_alert(
-                'info',
-                f"🚀 *Scalping Bot Started*\n\n"
-                f"*Capital:* ${self.capital:.2f}\n"
-                f"*Symbols:* {', '.join(Config.SYMBOLS)}\n"
-                f"*Strategy:* Mean Reversion Scalping\n"
-                f"*Mode:* {'Paper Trading' if Config.PAPER_TRADING else 'Live Trading'}\n"
-                f"*Risk/Trade:* {Config.RISK_PER_TRADE:.1%}\n"
-                f"*Daily Loss Limit:* {Config.MAX_DAILY_LOSS:.1%}"
-            )
         
         try:
+            # Start health check server
+            await self.health_check.start()
+            
+            # Start Telegram bot
+            await self.telegram_bot.start()
+            
+            logger.info("🚀 Bot started successfully")
+            logger.info(f"📡 Monitoring {len(Config.SYMBOLS)} symbols")
+            logger.info(f"⏱️  Check interval: {Config.CHECK_INTERVAL}s")
+            logger.info(f"🔄 Trade cooldown: {Config.TRADE_COOLDOWN}s")
+            
             # Main trading loop
             while self.running:
                 try:
+                    self.cycle_count += 1
+                    
+                    # Log cycle start
+                    if self.cycle_count % 10 == 0:
+                        logger.info(f"🔄 Cycle {self.cycle_count} - Checking markets...")
+                    
+                    # Check markets
                     await self.check_markets()
                     
-                    # Sleep before next scan
+                    # Save stats periodically
+                    if self.cycle_count % 20 == 0:
+                        open_trades = len([t for t in self.risk_manager.trades if t.status == 'open'])
+                        self.database.save_bot_stats(
+                            capital=self.capital,
+                            open_trades=open_trades,
+                            daily_pnl=self.risk_manager.daily_pnl,
+                            total_pnl=self.total_pnl
+                        )
+                    
+                    # Sleep before next cycle
                     await asyncio.sleep(Config.CHECK_INTERVAL)
                     
-                    # Log heartbeat
-                    self._log_heartbeat()
-                    
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
                     logger.error(f"Error in main loop: {e}")
-                    if self.telegram_bot.bot_running:
-                        await self.telegram_bot.send_alert(
-                            'error',
-                            "Error in main loop",
-                            {'error': str(e)}
-                        )
                     await asyncio.sleep(5)  # Wait before retrying
                     
         except KeyboardInterrupt:
@@ -1012,11 +837,11 @@ class ScalpingBot:
         except Exception as e:
             logger.error(f"Bot crashed: {e}")
             if self.telegram_bot.bot_running:
-                await self.telegram_bot.send_alert(
-                    'error',
-                    "Bot crashed!",
-                    {'error': str(e)}
-                )
+                await self.telegram_bot.queue_message('alert', {
+                    'alert_type': 'error',
+                    'message': 'Bot crashed!',
+                    'data': {'error': str(e)[:100]}
+                })
         finally:
             await self.stop()
     
@@ -1024,257 +849,287 @@ class ScalpingBot:
         """Stop the trading bot"""
         self.running = False
         
+        # Calculate runtime
+        uptime = datetime.now() - self.start_time
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
         # Send shutdown message
         if self.telegram_bot.bot_running:
-            uptime = datetime.now() - self.start_time
-            await self.telegram_bot.send_alert(
-                'info',
-                f"🛑 *Scalping Bot Stopped*\n\n"
-                f"*Uptime:* {str(uptime).split('.')[0]}\n"
-                f"*Total Trades:* {self.total_trades}\n"
-                f"*Final Capital:* ${self.capital:.2f}\n"
-                f"*Total P&L:* ${self.total_pnl:+.2f}"
-            )
+            await self.telegram_bot.queue_message('alert', {
+                'alert_type': 'info',
+                'message': 'Bot stopped',
+                'data': {
+                    'Uptime': f'{hours}h {minutes}m {seconds}s',
+                    'Total Trades': self.total_trades,
+                    'Final Capital': f'${self.capital:.2f}',
+                    'Total P&L': f'${self.total_pnl:+.2f}'
+                }
+            })
         
-        # Stop Telegram bot
+        # Stop components
         await self.telegram_bot.stop()
+        await self.health_check.stop()
         
-        logger.info("Scalping Bot shutdown complete")
+        logger.info("="*60)
+        logger.info("🛑 Bot shutdown complete")
+        logger.info(f"⏱️  Total uptime: {hours}h {minutes}m {seconds}s")
+        logger.info(f"📊 Total trades: {self.total_trades}")
+        logger.info(f"💰 Final capital: ${self.capital:.2f}")
+        logger.info(f"📈 Total P&L: ${self.total_pnl:+.2f}")
+        logger.info("="*60)
     
     async def check_markets(self):
         """Check all markets for trading opportunities"""
-        logger.debug("Scanning markets for opportunities...")
-        
         for symbol in Config.SYMBOLS:
             try:
                 # Check market conditions
                 market_cond = self.exchange.check_market_conditions(symbol)
                 if not market_cond['suitable']:
-                    logger.debug(f"Market not suitable for {symbol}: {market_cond['reason']}")
+                    if self.cycle_count % 30 == 0:  # Log less frequently
+                        logger.debug(f"Market not suitable for {symbol}: {market_cond['reason']}")
                     continue
                 
                 # Get market data
-                df = self.exchange.get_ohlcv(symbol, Config.TIMEFRAME, limit=100)
-                if df is None or len(df) < 50:
+                df = self.exchange.get_ohlcv(symbol, Config.TIMEFRAME, limit=50)
+                if df is None or len(df) < 20:
                     continue
                 
-                # Generate signal
-                signal = self.strategy.analyze(df, symbol)
+                # Generate signal (simplified for demo)
+                signal = self.generate_signal(df, symbol)
                 if signal is None:
                     continue
                 
-                # Check risk management
-                risk_check = self.risk_manager.can_trade(symbol, self.capital)
-                if not risk_check['allowed']:
-                    logger.debug(f"Trade not allowed for {symbol}: {risk_check['reason']}")
-                    continue
+                # Log signal
+                logger.info(f"📈 Signal detected for {symbol}: {signal['side']} at ${signal['price']:.2f}")
                 
-                # Calculate position size
-                position_size = self.strategy.calculate_position_size(
-                    self.capital,
-                    signal.price,
-                    signal.stop_loss
-                )
-                
-                if position_size <= 0:
-                    continue
-                
-                # Calculate fees
-                is_buy = signal.signal == SignalType.BUY
-                fees_data = self.exchange.calculate_fees(
-                    symbol,
-                    position_size,
-                    signal.price,
-                    is_buy
-                )
-                
-                # Create trade record
-                trade = TradeRecord(
-                    symbol=symbol,
-                    side=signal.signal.value,
-                    entry_price=fees_data['effective_price'],
-                    exit_price=None,
-                    size=position_size,
-                    entry_time=datetime.now(),
-                    exit_time=None,
-                    fees=fees_data['fee_amount'],
-                    status='open'
-                )
-                
-                # Record trade
-                self.risk_manager.record_trade(trade)
-                self.database.save_trade(asdict(trade))
-                
-                # Update capital (paper trading)
-                trade_value = position_size * fees_data['effective_price']
-                self.capital -= trade_value + fees_data['fee_amount']
-                
-                # Send Telegram alerts
+                # Send Telegram alert
                 if self.telegram_bot.bot_running:
-                    await self.telegram_bot.send_trade_signal({
-                        'symbol': symbol,
-                        'signal': signal.signal.value,
-                        'price': signal.price,
-                        'confidence': signal.confidence,
-                        'reason': signal.reason
-                    })
-                    
-                    await self.telegram_bot.send_trade_execution({
-                        'symbol': symbol,
-                        'side': signal.signal.value,
-                        'entry_price': fees_data['effective_price'],
-                        'size': position_size,
-                        'stop_loss': signal.stop_loss,
-                        'take_profit': signal.take_profit,
-                        'fees': fees_data['fee_amount']
+                    await self.telegram_bot.queue_message('alert', {
+                        'alert_type': 'signal',
+                        'message': f"Signal: {signal['side']} {symbol}",
+                        'data': {
+                            'Price': f'${signal["price"]:.2f}',
+                            'Reason': signal['reason'],
+                            'Spread': f'{market_cond["spread"]:.4%}',
+                            'Volume': f'${market_cond["volume"]:,.0f}'
+                        }
                     })
                 
-                logger.info(f"Trade executed: {signal.signal.value} {symbol} "
-                          f"at ${fees_data['effective_price']:.2f}, "
-                          f"size: {position_size:.6f}")
-                
-                # Monitor trade in background
-                asyncio.create_task(self.monitor_trade(trade, signal))
+                # Simulate trade (paper trading)
+                await self.simulate_trade(symbol, signal, market_cond)
                 
                 # Cooldown between trades
                 await asyncio.sleep(Config.TRADE_COOLDOWN)
                 
             except Exception as e:
                 logger.error(f"Error processing {symbol}: {e}")
-                if self.telegram_bot.bot_running:
-                    await self.telegram_bot.send_alert(
-                        'error',
-                        f"Error processing {symbol}",
-                        {'error': str(e)}
-                    )
     
-    async def monitor_trade(self, trade: TradeRecord, signal: TradeSignal):
-        """Monitor open trade for exit conditions"""
+    def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[Dict]:
+        """Generate simplified trading signal"""
         try:
-            entry_time = trade.entry_time
+            # Calculate simple indicators
+            close_prices = df['close'].values
             
-            while trade.status == 'open' and self.running:
-                # Get current price
-                ticker = self.exchange.get_ticker(trade.symbol)
-                if not ticker:
-                    await asyncio.sleep(5)
-                    continue
-                
-                current_price = ticker.last
-                duration = datetime.now() - entry_time
-                
-                # Check exit conditions
-                exit_reason = None
-                exit_price = None
-                
-                if trade.side == 'BUY':
-                    # Take profit
-                    if current_price >= signal.take_profit:
-                        exit_reason = 'Take Profit'
-                        exit_price = signal.take_profit
-                    
-                    # Stop loss
-                    elif current_price <= signal.stop_loss:
-                        exit_reason = 'Stop Loss'
-                        exit_price = signal.stop_loss
-                    
-                    # Time-based exit
-                    elif duration.total_seconds() > Config.MAX_TRADE_DURATION:
-                        exit_reason = 'Time Exit'
-                        exit_price = current_price
-                
-                else:  # SELL
-                    # Take profit
-                    if current_price <= signal.take_profit:
-                        exit_reason = 'Take Profit'
-                        exit_price = signal.take_profit
-                    
-                    # Stop loss
-                    elif current_price >= signal.stop_loss:
-                        exit_reason = 'Stop Loss'
-                        exit_price = signal.stop_loss
-                    
-                    # Time-based exit
-                    elif duration.total_seconds() > Config.MAX_TRADE_DURATION:
-                        exit_reason = 'Time Exit'
-                        exit_price = current_price
-                
-                # Exit trade if condition met
-                if exit_reason:
-                    # Calculate exit fees
-                    exit_fees = current_price * trade.size * Config.TAKER_FEE
-                    
-                    # Update trade
-                    trade.exit_price = exit_price
-                    trade.exit_time = datetime.now()
-                    trade.status = 'closed'
-                    trade.fees += exit_fees
-                    
-                    # Calculate P&L
-                    if trade.side == 'BUY':
-                        trade.pnl = (exit_price - trade.entry_price) * trade.size - trade.fees
-                    else:
-                        trade.pnl = (trade.entry_price - exit_price) * trade.size - trade.fees
-                    
-                    trade.pnl_pct = trade.pnl / (trade.entry_price * trade.size)
-                    
-                    # Update capital
-                    self.capital += trade.size * exit_price - exit_fees
-                    self.total_trades += 1
-                    self.total_pnl += trade.pnl
-                    
-                    # Save to database
-                    trade_dict = asdict(trade)
-                    trade_dict['reason'] = exit_reason
-                    self.database.save_trade(trade_dict)
-                    
-                    # Send Telegram alert
-                    if self.telegram_bot.bot_running:
-                        await self.telegram_bot.send_pnl_update({
-                            'symbol': trade.symbol,
-                            'side': trade.side,
-                            'pnl': trade.pnl,
-                            'pnl_pct': trade.pnl_pct,
-                            'duration': str(duration).split('.')[0],
-                            'reason': exit_reason,
-                            'entry_price': trade.entry_price,
-                            'exit_price': exit_price
-                        })
-                    
-                    logger.info(f"Trade closed: {trade.symbol} {trade.side} "
-                              f"P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.2%}) "
-                              f"Reason: {exit_reason}")
-                    break
-                
-                await asyncio.sleep(5)  # Check every 5 seconds
-                
+            if len(close_prices) < 20:
+                return None
+            
+            # Simple moving averages
+            sma_short = np.mean(close_prices[-5:])
+            sma_long = np.mean(close_prices[-20:])
+            
+            # Price action
+            current_price = close_prices[-1]
+            prev_price = close_prices[-2]
+            price_change = ((current_price - prev_price) / prev_price) * 100
+            
+            # Volume check
+            volumes = df['volume'].values
+            avg_volume = np.mean(volumes[-20:])
+            current_volume = volumes[-1]
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+            
+            # Generate signals
+            if (sma_short > sma_long * 1.001 and  # Short MA above long MA
+                price_change > 0.05 and  # Positive momentum
+                volume_ratio > Config.MIN_VOLUME_RATIO):  # High volume
+                return {
+                    'symbol': symbol,
+                    'side': 'BUY',
+                    'price': current_price,
+                    'reason': f'Bullish crossover (Δ{price_change:.2f}%, Vol×{volume_ratio:.1f})'
+                }
+            
+            elif (sma_short < sma_long * 0.999 and  # Short MA below long MA
+                  price_change < -0.05 and  # Negative momentum
+                  volume_ratio > Config.MIN_VOLUME_RATIO):  # High volume
+                return {
+                    'symbol': symbol,
+                    'side': 'SELL',
+                    'price': current_price,
+                    'reason': f'Bearish crossover (Δ{price_change:.2f}%, Vol×{volume_ratio:.1f})'
+                }
+            
+            return None
+            
         except Exception as e:
-            logger.error(f"Error monitoring trade {trade.symbol}: {e}")
+            logger.error(f"Error generating signal for {symbol}: {e}")
+            return None
+    
+    async def simulate_trade(self, symbol: str, signal: Dict, market_cond: Dict):
+        """Simulate a trade (paper trading)"""
+        try:
+            # Calculate position size
+            position_size = self.calculate_position_size(signal['price'])
+            
+            if position_size <= 0:
+                return
+            
+            # Simulate trade execution
+            entry_price = signal['price']
+            fees = entry_price * position_size * Config.TAKER_FEE
+            trade_value = entry_price * position_size
+            
+            # Update capital
+            self.capital -= trade_value + fees
+            
+            # Create trade record
+            trade = {
+                'symbol': symbol,
+                'side': signal['side'],
+                'entry_price': entry_price,
+                'size': position_size,
+                'fees': fees,
+                'entry_time': datetime.now(),
+                'status': 'open'
+            }
+            
+            # Save to database
+            self.database.save_trade(trade)
+            
+            # Send execution alert
             if self.telegram_bot.bot_running:
-                await self.telegram_bot.send_alert(
-                    'error',
-                    f"Error monitoring trade {trade.symbol}",
-                    {'error': str(e)}
-                )
+                await self.telegram_bot.queue_message('alert', {
+                    'alert_type': 'trade',
+                    'message': f"Trade Executed: {signal['side']} {symbol}",
+                    'data': {
+                        'Entry Price': f'${entry_price:.2f}',
+                        'Size': f'{position_size:.6f}',
+                        'Value': f'${trade_value:.2f}',
+                        'Fees': f'${fees:.4f}',
+                        'New Capital': f'${self.capital:.2f}'
+                    }
+                })
+            
+            logger.info(f"Trade simulated: {signal['side']} {symbol} "
+                       f"at ${entry_price:.2f}, size: {position_size:.6f}")
+            
+            # Monitor trade in background
+            asyncio.create_task(self.monitor_simulated_trade(trade, signal))
+            
+        except Exception as e:
+            logger.error(f"Error simulating trade for {symbol}: {e}")
     
-    def _log_heartbeat(self):
-        """Log heartbeat status"""
-        open_trades = len([t for t in self.risk_manager.trades if t.status == 'open'])
-        closed_trades = len([t for t in self.risk_manager.trades if t.status == 'closed'])
+    def calculate_position_size(self, entry_price: float) -> float:
+        """Calculate position size based on risk"""
+        risk_amount = self.capital * Config.RISK_PER_TRADE
         
-        logger.debug(f"Heartbeat - Capital: ${self.capital:.2f}, "
-                    f"Open trades: {open_trades}, "
-                    f"Closed trades: {closed_trades}, "
-                    f"Total P&L: ${self.total_pnl:.2f}")
+        # Assume 1% price risk for simulation
+        price_risk = entry_price * 0.01
+        
+        if price_risk == 0:
+            return 0
+        
+        position_size = risk_amount / price_risk
+        
+        # Apply max position size
+        max_size = self.capital * Config.MAX_POSITION_SIZE / entry_price
+        position_size = min(position_size, max_size)
+        
+        return round(position_size, 6)
     
-    async def send_daily_report(self):
-        """Send daily trading report"""
-        if not self.telegram_bot.bot_running:
-            return
-        
-        stats = self.risk_manager.get_daily_stats()
-        if stats:
-            await self.telegram_bot.send_daily_summary(stats)
+    async def monitor_simulated_trade(self, trade: Dict, signal: Dict):
+        """Monitor simulated trade for exit"""
+        try:
+            entry_time = datetime.now()
+            entry_price = trade['entry_price']
+            
+            # Random exit simulation (between 1-5 minutes)
+            wait_time = np.random.uniform(60, 300)
+            await asyncio.sleep(wait_time)
+            
+            # Get current price
+            market_cond = self.exchange.check_market_conditions(trade['symbol'])
+            if not market_cond['suitable']:
+                exit_price = entry_price * (1 + np.random.uniform(-0.002, 0.002))
+            else:
+                exit_price = market_cond['last']
+            
+            # Calculate P&L
+            exit_fees = exit_price * trade['size'] * Config.TAKER_FEE
+            total_fees = trade['fees'] + exit_fees
+            
+            if trade['side'] == 'BUY':
+                pnl = (exit_price - entry_price) * trade['size'] - total_fees
+            else:
+                pnl = (entry_price - exit_price) * trade['size'] - total_fees
+            
+            pnl_pct = (pnl / (entry_price * trade['size'])) * 100
+            
+            # Update capital
+            self.capital += trade['size'] * exit_price - exit_fees
+            self.total_trades += 1
+            self.total_pnl += pnl
+            
+            # Update trade record
+            trade.update({
+                'exit_price': exit_price,
+                'exit_time': datetime.now(),
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'status': 'closed',
+                'reason': 'Time-based exit'
+            })
+            
+            # Save to database
+            self.database.save_trade(trade)
+            
+            # Send P&L alert
+            if self.telegram_bot.bot_running:
+                alert_type = 'profit' if pnl > 0 else 'loss'
+                await self.telegram_bot.queue_message('alert', {
+                    'alert_type': alert_type,
+                    'message': f"Trade Closed: {trade['side']} {trade['symbol']}",
+                    'data': {
+                        'P&L': f'${pnl:+.2f} ({pnl_pct:+.2f}%)',
+                        'Entry': f'${entry_price:.2f}',
+                        'Exit': f'${exit_price:.2f}',
+                        'Duration': f'{wait_time:.0f}s',
+                        'Total Capital': f'${self.capital:.2f}'
+                    }
+                })
+            
+            logger.info(f"Trade closed: {trade['symbol']} {trade['side']} "
+                       f"P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)")
+            
+        except Exception as e:
+            logger.error(f"Error monitoring trade {trade['symbol']}: {e}")
+
+# ============================================================================
+# SIMPLIFIED COMPONENTS
+# ============================================================================
+
+class ScalpingStrategy:
+    """Simplified strategy for Railway"""
+    def __init__(self):
+        logger.info("Strategy initialized")
+
+class RiskManager:
+    """Simplified risk manager"""
+    def __init__(self):
+        self.trades = []
+        self.daily_pnl = 0
+        logger.info("Risk manager initialized")
 
 # ============================================================================
 # MAIN EXECUTION
@@ -1283,13 +1138,13 @@ class ScalpingBot:
 async def main():
     """Main entry point"""
     print("\n" + "="*60)
-    print("🤖 SCALPING TRADING BOT 🤖")
+    print("🤖 SCALPING TRADING BOT - RAILWAY EDITION 🤖")
     print("="*60)
+    print(f"Platform: {'Railway 🚂' if Config.RAILWAY_DEPLOYMENT else 'Local 💻'}")
     print(f"Initial Capital: ${Config.INITIAL_CAPITAL}")
-    print(f"Trading Symbols: {', '.join(Config.SYMBOLS)}")
-    print(f"Paper Trading: {Config.PAPER_TRADING}")
-    print(f"Risk per Trade: {Config.RISK_PER_TRADE:.1%}")
-    print(f"Daily Loss Limit: {Config.MAX_DAILY_LOSS:.1%}")
+    print(f"Symbols: {', '.join(Config.SYMBOLS)}")
+    print(f"Timeframe: {Config.TIMEFRAME}")
+    print(f"Mode: {'Paper Trading' if Config.PAPER_TRADING else 'Live Trading'}")
     print("="*60 + "\n")
     
     # Create and run bot
@@ -1297,7 +1152,7 @@ async def main():
     
     # Setup signal handlers
     def signal_handler(signum, frame):
-        print("\n🛑 Shutting down bot...")
+        print("\n🛑 Received shutdown signal...")
         bot.running = False
     
     signal.signal(signal.SIGINT, signal_handler)
@@ -1311,23 +1166,28 @@ async def main():
         logger.error(f"Fatal error: {e}")
         print(f"\n❌ Fatal error: {e}")
     finally:
-        # Ensure bot is stopped
-        bot.running = False
+        print("\n✅ Bot shutdown complete")
 
 if __name__ == "__main__":
     # Check for required packages
-    try:
-        import ccxt
-        import pandas
-        import numpy
-        import ta
-        import telegram
-        import dotenv
-        import schedule
-    except ImportError as e:
-        print(f"\n❌ Missing required package: {e}")
-        print("Please install required packages:")
-        print("pip install ccxt pandas numpy ta python-telegram-bot python-dotenv schedule")
+    required_packages = {
+        'ccxt': 'ccxt',
+        'pandas': 'pandas',
+        'numpy': 'numpy',
+        'telegram': 'python-telegram-bot',
+        'dotenv': 'python-dotenv'
+    }
+    
+    missing_packages = []
+    for package, import_name in required_packages.items():
+        try:
+            __import__(import_name if import_name != 'telegram' else 'telegram.ext')
+        except ImportError:
+            missing_packages.append(package)
+    
+    if missing_packages:
+        print(f"\n❌ Missing packages: {', '.join(missing_packages)}")
+        print("Install with: pip install ccxt pandas numpy python-telegram-bot python-dotenv ta schedule")
         sys.exit(1)
     
     # Run the bot
