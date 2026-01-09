@@ -39,7 +39,7 @@ class StableConfig:
     SYMBOLS = [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 
         'ADA/USDT', 'XRP/USDT', 'DOT/USDT', 'DOGE/USDT',
-        'AVAX/USDT', 'MATIC/USDT'
+        'AVAX/USDT'
     ]
     
     # Timeframes
