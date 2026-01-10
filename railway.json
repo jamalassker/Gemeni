@@ -14,6 +14,12 @@
         "startCommand": "python bot2.py"
       }
     },
+
+    "four": {
+      "deploy": {
+        "startCommand": "python bot4.py"
+      }
+    },
     "super": {
       "deploy": {
         "startCommand": "python bot3.py"
