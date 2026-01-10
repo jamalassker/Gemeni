@@ -1,197 +1,141 @@
+import os
+import time
+import logging
 import pandas as pd
 import numpy as np
-import asyncio, time, aiohttp
-import ccxt.async_support as ccxt
+import requests
+import ccxt
+import warnings
+from datetime import datetime
+from typing import Dict, Optional
 
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT"]
-TIMEFRAME = "1m"
-MAX_HOLD = 180
-TAKER_FEE = 0.001
-TG_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
-TG_CHAT = "8287625785"
+warnings.filterwarnings('ignore')
 
-class ZScalper:
+# ============================================================================
+# RELAXED CONFIGURATION FOR MAXIMUM ACTIVITY
+# ============================================================================
+
+class UltimateConfig:
+    SYMBOLS = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 
+        'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'TRX/USDT',
+        'LINK/USDT', 'MATIC/USDT', 'NEAR/USDT', 'LTC/USDT', 'BCH/USDT',
+        'SHIB/USDT', 'UNI/USDT', 'STX/USDT', 'FIL/USDT', 'ARB/USDT'
+    ]
+    
+    INITIAL_CAPITAL = 100.0
+    RISK_PER_TRADE = 0.10      # Increased to 10% for faster growth
+    MAX_OPEN_TRADES = 10       # More simultaneous trades
+    
+    # Fast Scalping Targets
+    BASE_TAKE_PROFIT = 0.0070   # 0.7%
+    BASE_STOP_LOSS = 0.0050     # 0.5%
+    BREAK_EVEN_TRIGGER = 0.0020 # Secure profit very early
+    
+    TAKER_FEE = 0.0010
+    CHECK_INTERVAL = 2          # Ultra-fast scanning (2 seconds)
+    
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+# ============================================================================
+# TELEGRAM ALERTS
+# ============================================================================
+
+def send_telegram(msg: str):
+    if not UltimateConfig.TELEGRAM_TOKEN: return
+    try:
+        url = f"https://api.telegram.org/bot{UltimateConfig.TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": UltimateConfig.TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
+    except: pass
+
+# ============================================================================
+# ENGINE & LOGIC
+# ============================================================================
+
+class PortfolioManager:
+    def __init__(self, initial):
+        self.balance = initial
+        self.open_trades = {}
+
+    def update_and_report(self, prices):
+        closed = []
+        for tid, t in self.open_trades.items():
+            price = prices.get(t['symbol'])
+            if not price: continue
+            
+            # P&L calculation
+            pnl = ((price - t['entry']) / t['entry']) if t['side'] == 'BUY' else ((t['entry'] - price) / t['entry'])
+            pnl -= (UltimateConfig.TAKER_FEE * 2)
+
+            # Break-Even Protection
+            if pnl >= UltimateConfig.BREAK_EVEN_TRIGGER and not t.get('be'):
+                t['sl'] = -0.0001
+                t['be'] = True
+                send_telegram(f"🛡️ <b>SAFE:</b> {t['symbol']} at Break-Even")
+
+            # Exit Logic
+            if pnl >= UltimateConfig.BASE_TAKE_PROFIT: closed.append((tid, "✅ TP", pnl))
+            elif pnl <= -t['sl']: closed.append((tid, "❌ SL", pnl))
+
+        for tid, reason, final_pnl in closed:
+            trade = self.open_trades.pop(tid)
+            profit = final_pnl * trade['size']
+            self.balance += (trade['size'] + profit)
+            send_telegram(f"🏁 <b>CLOSED: {trade['symbol']}</b>\nNet: ${profit:+.2f}\nBalance: ${self.balance:.2f}")
+
+class FastBot:
     def __init__(self):
-        self.ex = ccxt.binance({'enableRateLimit': True})
-        self.pos = None
-        self.cash = 100.0
-        self.pnl = 0.0
-        self.msg_id = None
-        self.sess = None
-        self.last_update = 0
+        self.exchange = ccxt.binance()
+        self.portfolio = PortfolioManager(UltimateConfig.INITIAL_CAPITAL)
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-    async def tg(self, txt, edit=False):
-        """Send or update Telegram message"""
-        if not self.sess:
-            self.sess = aiohttp.ClientSession()
+    def get_signal(self, df):
+        # Relaxed logic: Just check EMA slope and RSI
+        ema8 = df['close'].ewm(span=8).mean().iloc[-1]
+        ema21 = df['close'].ewm(span=21).mean().iloc[-1]
+        rsi = self.rsi(df['close']).iloc[-1]
         
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/"
-        url += "editMessageText" if edit and self.msg_id else "sendMessage"
-        
-        data = {
-            "chat_id": TG_CHAT,
-            "text": txt,
-            "parse_mode": "HTML",
-            "disable_notification": edit  # Only notify on new messages, not updates
-        }
-        
-        if edit and self.msg_id:
-            data["message_id"] = self.msg_id
-            
-        try:
-            async with self.sess.post(url, json=data, timeout=5) as r:
-                res = await r.json()
-                if not edit and res.get("ok"):
-                    self.msg_id = res["result"]["message_id"]
-        except Exception as e:
-            print(f"Telegram error: {e}")
+        if ema8 > ema21 and rsi < 70: return 'BUY'
+        if ema8 < ema21 and rsi > 30: return 'SELL'
+        return None
 
-    def calc(self, df):
-        """Calculate indicators"""
-        df['sma20'] = df['c'].rolling(20).mean()
-        df['std20'] = df['c'].rolling(20).std()
-        df['zscore'] = (df['c'] - df['sma20']) / df['std20'].replace(0, 1e-9)
-        
-        # RSI
-        delta = df['c'].diff()
-        gain = delta.clip(lower=0).rolling(10).mean()
-        loss = (-delta.clip(upper=0)).rolling(10).mean()
-        df['rsi'] = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
-        
-        # Momentum & Volume
-        df['mom'] = df['c'].pct_change(5) * 100
-        df['vol_z'] = (df['v'] - df['v'].rolling(20).mean()) / df['v'].rolling(20).std().replace(0, 1e-9)
-        df['atr'] = (df['h'] - df['l']).rolling(10).mean()
-        
-        # Entry/Exit specific signals
-        df['buy_signal'] = (df['zscore'] < -1.2) & (df['rsi'] < 40) & (df['mom'] > 0.05)
-        df['sell_signal'] = (df['zscore'] > 1.2) | (df['rsi'] > 70)
-        
-        return df.dropna()
+    def rsi(self, series, window=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window).mean()
+        return 100 - (100 / (1 + (gain / loss)))
 
-    async def fetch(self, sym):
-        """Fetch OHLCV data"""
-        ohlcv = await self.ex.fetch_ohlcv(sym, TIMEFRAME, limit=50)
-        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-        return self.calc(df)
-
-    async def check_exit(self):
-        """Check if we should exit current position"""
-        if not self.pos:
-            return False
-            
-        try:
-            tick = await self.ex.fetch_ticker(self.pos['sym'])
-            price = tick['last']
-            held = time.time() - self.pos['t']
-            
-            # Quick exit conditions
-            profit_pct = (price / self.pos['entry'] - 1) * 100
-            fee_adjusted = profit_pct - (TAKER_FEE * 2 * 100)  # Account for entry+exit fees
-            
-            # Faster exit conditions
-            if fee_adjusted >= 0.2:  # Exit at 0.2% profit after fees
-                reason = "✅ QUICK PROFIT"
-            elif price >= self.pos['tp']:
-                reason = "✅ TP HIT"
-            elif price <= self.pos['sl']:
-                reason = "❌ SL HIT"
-            elif held > MAX_HOLD:
-                reason = "⏱ TIME OUT"
-            elif held > 30 and profit_pct > 0.05:  # Faster lock-in (30s instead of 45s)
-                reason = "🔒 LOCK PROFIT"
-            else:
-                return False
-                
-            # Execute exit
-            val = self.pos['sz'] * price * (1 - TAKER_FEE)
-            gain = val - self.pos['cost']
-            self.pnl += gain
-            self.cash = val
-            profit_loss = "PROFIT" if gain > 0 else "LOSS"
-            
-            await self.tg(f"🏁 EXIT: {self.pos['sym']}\n"
-                         f"Reason: {reason}\n"
-                         f"Entry: ${self.pos['entry']:.4f} | Exit: ${price:.4f}\n"
-                         f"P/L: ${gain:+.3f} ({profit_pct:+.2f}%)\n"
-                         f"Net Total: ${self.pnl:+.2f}")
-            
-            self.pos = None
-            return True
-            
-        except Exception as e:
-            print(f"Exit check error: {e}")
-            return False
-
-    async def check_entry(self):
-        """Check for new entry opportunities"""
-        if self.pos:
-            return False
-            
-        best_score = 0
-        best_entry = None
+    def run(self):
+        print("🚀 SCALPER STARTING...") # This will show in Railway immediately
+        send_telegram("🚀 <b>BOT STARTED</b>\nAggressive Scalping Active.")
         
-        for sym in SYMBOLS:
-            try:
-                df = await self.fetch(sym)
-                r = df.iloc[-1]
-                
-                # Enhanced scoring system
-                score = 0
-                
-                # Strong reversal signals
-                if r['zscore'] < -1.5:
-                    score += 3  # Strongly oversold
-                elif r['zscore'] < -1.2:
-                    score += 2
+        while True:
+            prices = {}
+            for sym in UltimateConfig.SYMBOLS:
+                try:
+                    ohlcv = self.exchange.fetch_ohlcv(sym, '1m', limit=30)
+                    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+                    prices[sym] = df['c'].iloc[-1]
                     
-                if r['rsi'] < 35:
-                    score += 3  # Deep oversold
-                elif r['rsi'] < 40:
-                    score += 2
-                    
-                if r['mom'] > 0.1:  # Strong momentum
-                    score += 2
-                elif r['mom'] > 0.05:
-                    score += 1
-                    
-                if r['vol_z'] > 1.5:  # High volume spike
-                    score += 2
-                elif r['vol_z'] > 1:
-                    score += 1
-                    
-                # Check for actual buy signal from dataframe
-                if r['buy_signal']:
-                    score += 2
-                    
-                if score > best_score and score >= 5:  # Lower threshold for faster entries
-                    best_score = score
-                    best_entry = (sym, r, score)
-                    
-            except Exception as e:
-                print(f"Entry check error for {sym}: {e}")
-        
-        if best_entry:
-            sym, r, score = best_entry
-            price = r['c']
-            atr = r['atr']
+                    if len(self.portfolio.open_trades) < UltimateConfig.MAX_OPEN_TRADES:
+                        if sym not in [t['symbol'] for t in self.portfolio.open_trades.values()]:
+                            sig = self.get_signal(df)
+                            if sig:
+                                size = self.portfolio.balance * UltimateConfig.RISK_PER_TRADE
+                                tid = f"{sym}_{int(time.time())}"
+                                self.portfolio.open_trades[tid] = {'symbol': sym, 'entry': prices[sym], 'size': size, 'side': sig, 'sl': UltimateConfig.BASE_STOP_LOSS, 'be': False}
+                                logging.info(f"OPENED: {sig} {sym} at {prices[sym]}")
+                                send_telegram(f"💰 <b>OPEN: {sig} {sym}</b>\nPrice: {prices[sym]}")
+                    time.sleep(0.05)
+                except: continue
             
-            # More aggressive position sizing for faster trades
-            position_size = min(0.8, 0.5 + (score - 5) * 0.1)  # 50-80% of capital
-            cost = self.cash * position_size * (1 + TAKER_FEE)
-            sz = (self.cash * position_size) / price
-            
-            self.pos = {
-                'sym': sym,
-                'entry': price,
-                'sz': sz,
-                'cost': cost,
-                't': time.time(),
-                'tp': price + atr * 0.5,  # Tighter TP for faster exits
-                'sl': price - atr * 0.8,  # Tighter SL for faster exits
-                'score': score
-            }
-            self.cash -= (self.cash * position_size)
+            self.portfolio.update_and_report(prices)
+            time.sleep(UltimateConfig.CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    FastBot().run()
+
             
             await self.tg(f"⚡ <b>BUY {sym}</b>\n"
                          f"Price: ${price:.4f}\n"
