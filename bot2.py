@@ -1670,4 +1670,4 @@ if __name__ == "__main__":
     bot = DeepLearningScalpingBot()
     
     # Run bot
-    bot.run() optimal price based on direction and order
+    bot.run()      # optimal price based on direction and order
