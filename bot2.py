@@ -1,65 +1,1766 @@
-# deep_lea# ddeep_lea# deep_learning_scalping_bot.py """ Deep Learning Scalping Bot with Neural Network Predictions Monitors 20 Most Volatile Cryptocurrencies Hourly Profit Targets with $100 Capital """
+# deep_lea# d
+# deep_learning_scalping_bot.py
+"""
+Deep Learning Scalping Bot with Neural Network Predictions
+Monitors 20 Most Volatile Cryptocurrencies
+Hourly Profit Targets with $100 Capital
+"""
 
-import os import time import json import sqlite3 import asyncio import logging import pandas as pd import numpy as np from datetime import datetime, timedelta from typing import Dict, List, Optional, Tuple, Any import ccxt from collections import deque, defaultdict import threading import sys import warnings warnings.filterwarnings('ignore')
+import os
+import time
+import json
+import sqlite3
+import asyncio
+import logging
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
+import ccxt
+from collections import deque, defaultdict
+import threading
+import sys
+import warnings
+warnings.filterwarnings('ignore')
 
-# Deep Learning Libraries from sklearn.preprocessing import MinMaxScaler from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier import xgboost as xgb from scipy import stats
+# Deep Learning Libraries
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+import xgboost as xgb
+from scipy import stats
 
-# Load environment variables from dotenv import load_dotenv load_dotenv()
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
-# ============================================================================ # ULTIMATE CONFIGURATION - DEEP LEARNING SCALPING # ============================================================================
+# ============================================================================
+# ULTIMATE CONFIGURATION - DEEP LEARNING SCALPING
+# ============================================================================
 
-class UltimateConfig: """Ultimate configuration for deep learning scalping""" # Exchange & Symbols EXCHANGE = 'binance' # Top 20 most volatile cryptocurrencies (based on historical data) SYMBOLS = [ 'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT', 'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT', 'SHIB/USDT', 'TRX/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT', 'LTC/USDT', 'ETC/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT' ] # Timeframes for multi-timeframe analysis TIMEFRAMES = ['1m', '5m', '15m'] # Multi-timeframe analysis PRIMARY_TIMEFRAME = '1m' # Main scalping timeframe # Capital Management (Starting with $100) INITIAL_CAPITAL = 100.0 RISK_PER_TRADE = 0.008 # 0.8% risk per trade MAX_DAILY_LOSS = 0.015 # 1.5% daily loss limit HOURLY_TARGET = 0.005 # 0.5% hourly profit target DAILY_TARGET = 0.02 # 2% daily target # Position Sizing MAX_POSITION_SIZE = 0.15 # 15% max per symbol MAX_OPEN_TRADES = 8 # Max 8 open trades MAX_SAME_SYMBOL = 2 # Max 2 trades per symbol # Scalping Parameters (ULTRA FAST) BASE_TAKE_PROFIT = 0.0020 # 0.20% base take profit BASE_STOP_LOSS = 0.0015 # 0.15% base stop loss TRAILING_STOP = 0.0008 # 0.08% trailing stop # Dynamic Adjustments based on volatility VOLATILITY_MULTIPLIER = { 'low': 0.7, 'medium': 1.0, 'high': 1.3, 'extreme': 1.6 } # Fees & Spread MAKER_FEE = 0.00075 TAKER_FEE = 0.0010 MIN_SPREAD = 0.00005 # 0.005% minimum MAX_SPREAD = 0.0003 # 0.03% maximum # Deep Learning Parameters DL_LOOKBACK = 100 # Look back 100 candles DL_TRAIN_INTERVAL = 50 # Retrain every 50 cycles DL_MIN_CONFIDENCE = 0.68 # 68% minimum confidence DL_ENSEMBLE_SIZE = 3 # Number of models in ensemble # Feature Engineering FEATURE_WINDOWS = [5, 10, 20, 50] TECHNICAL_INDICATORS = ['rsi', 'macd', 'bb', 'obv', 'stoch', 'atr', 'adx'] # Volatility Analysis VOLATILITY_PERIODS = [5, 15, 30, 60] VOLATILITY_THRESHOLDS = { 'low': 0.001, 'medium': 0.002, 'high': 0.004, 'extreme': 0.008 } # Execution Parameters CHECK_INTERVAL = 3 # Check every 3 seconds TRADE_COOLDOWN = 15 # 15 seconds between trades on same symbol MAX_TRADE_DURATION = 120 # Max 2 minutes per trade (ULTRA FAST) MIN_TRADE_DURATION = 10 # Minimum 10 seconds # Market Hours Optimization PEAK_HOURS = [8, 9, 10, 14, 15, 16, 20, 21, 22] # High volatility hours PEAK_MULTIPLIER = 1.25 # Telegram TELEGRAM_ENABLED = True TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '') TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '') # System LOG_LEVEL = 'INFO' DATABASE_PATH = '/data/deep_learning_bot.db' if 'RAILWAY_ENVIRONMENT' in os.environ else 'deep_learning_bot.db' # Performance Monitoring HOURLY_REPORT_INTERVAL = 3600 # 1 hour PERFORMANCE_TRACKING = True
+class UltimateConfig:
+    """Ultimate configuration for deep learning scalping"""
+    
+    # Exchange & Symbols
+    EXCHANGE = 'binance'
+    
+    # Top 20 most volatile cryptocurrencies (based on historical data)
+    SYMBOLS = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'ADA/USDT',
+        'XRP/USDT', 'DOT/USDT', 'DOGE/USDT', 'AVAX/USDT',
+        'SHIB/USDT', 'TRX/USDT', 'LINK/USDT', 'ATOM/USDT', 'UNI/USDT',
+        'LTC/USDT', 'ETC/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT'
+    ]
+    
+    # Timeframes for multi-timeframe analysis
+    TIMEFRAMES = ['1m', '5m', '15m']  # Multi-timeframe analysis
+    PRIMARY_TIMEFRAME = '1m'  # Main scalping timeframe
+    
+    # Capital Management (Starting with $100)
+    INITIAL_CAPITAL = 100.0
+    RISK_PER_TRADE = 0.008  # 0.8% risk per trade
+    MAX_DAILY_LOSS = 0.015  # 1.5% daily loss limit
+    HOURLY_TARGET = 0.005   # 0.5% hourly profit target
+    DAILY_TARGET = 0.02     # 2% daily target
+    
+    # Position Sizing
+    MAX_POSITION_SIZE = 0.15  # 15% max per symbol
+    MAX_OPEN_TRADES = 8       # Max 8 open trades
+    MAX_SAME_SYMBOL = 2       # Max 2 trades per symbol
+    
+    # Scalping Parameters (ULTRA FAST)
+    BASE_TAKE_PROFIT = 0.0020  # 0.20% base take profit
+    BASE_STOP_LOSS = 0.0015    # 0.15% base stop loss
+    TRAILING_STOP = 0.0008     # 0.08% trailing stop
+    
+    # Dynamic Adjustments based on volatility
+    VOLATILITY_MULTIPLIER = {
+        'low': 0.7,
+        'medium': 1.0,
+        'high': 1.3,
+        'extreme': 1.6
+    }
+    
+    # Fees & Spread
+    MAKER_FEE = 0.00075
+    TAKER_FEE = 0.0010
+    MIN_SPREAD = 0.00005  # 0.005% minimum
+    MAX_SPREAD = 0.0003   # 0.03% maximum
+    
+    # Deep Learning Parameters
+    DL_LOOKBACK = 100           # Look back 100 candles
+    DL_TRAIN_INTERVAL = 50      # Retrain every 50 cycles
+    DL_MIN_CONFIDENCE = 0.68    # 68% minimum confidence
+    DL_ENSEMBLE_SIZE = 3        # Number of models in ensemble
+    
+    # Feature Engineering
+    FEATURE_WINDOWS = [5, 10, 20, 50]
+    TECHNICAL_INDICATORS = ['rsi', 'macd', 'bb', 'obv', 'stoch', 'atr', 'adx']
+    
+    # Volatility Analysis
+    VOLATILITY_PERIODS = [5, 15, 30, 60]
+    VOLATILITY_THRESHOLDS = {
+        'low': 0.001,
+        'medium': 0.002,
+        'high': 0.004,
+        'extreme': 0.008
+    }
+    
+    # Execution Parameters
+    CHECK_INTERVAL = 3          # Check every 3 seconds
+    TRADE_COOLDOWN = 15         # 15 seconds between trades on same symbol
+    MAX_TRADE_DURATION = 120    # Max 2 minutes per trade (ULTRA FAST)
+    MIN_TRADE_DURATION = 10     # Minimum 10 seconds
+    
+    # Market Hours Optimization
+    PEAK_HOURS = [8, 9, 10, 14, 15, 16, 20, 21, 22]  # High volatility hours
+    PEAK_MULTIPLIER = 1.25
+    
+    # Telegram
+    TELEGRAM_ENABLED = True
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+    
+    # System
+    LOG_LEVEL = 'INFO'
+    DATABASE_PATH = '/data/deep_learning_bot.db' if 'RAILWAY_ENVIRONMENT' in os.environ else 'deep_learning_bot.db'
+    
+    # Performance Monitoring
+    HOURLY_REPORT_INTERVAL = 3600  # 1 hour
+    PERFORMANCE_TRACKING = True
 
-# ============================================================================ # ADVANCED LOGGING WITH PERFORMANCE METRICS # ============================================================================
+# ============================================================================
+# ADVANCED LOGGING WITH PERFORMANCE METRICS
+# ============================================================================
 
-class PerformanceLogger: """Advanced logging with performance metrics""" @staticmethod def setup_logging(): """Setup advanced logging""" logger = logging.getLogger('DeepLearningBot') logger.setLevel(getattr(logging, UltimateConfig.LOG_LEVEL)) # Clear existing handlers logger.handlers.clear() # Color formatter class ColorFormatter(logging.Formatter): COLORS = { 'DEBUG': '\033[36m', 'INFO': '\033[32m', 'WARNING': '\033[33m', 'ERROR': '\033[31m', 'CRITICAL': '\033[41m', 'TRADE': '\033[35m', # Purple for trades 'PROFIT': '\033[92m', # Bright green for profits 'LOSS': '\033[91m', # Bright red for losses } RESET = '\033[0m' def format(self, record): log_color = self.COLORS.get(record.levelname, '\033[37m') if hasattr(record, 'trade_type'): if record.trade_type == 'profit': log_color = self.COLORS['PROFIT'] elif record.trade_type == 'loss': log_color = self.COLORS['LOSS'] elif record.trade_type == 'trade': log_color = self.COLORS['TRADE'] message = super().format(record) return f"{log_color}{message}{self.RESET}" # Console handler console_handler = logging.StreamHandler() console_handler.setLevel(getattr(logging, UltimateConfig.LOG_LEVEL)) console_handler.setFormatter(ColorFormatter('%(asctime)s - %(levelname)s - %(message)s')) logger.addHandler(console_handler) # File handler file_handler = logging.FileHandler('deep_learning_bot.log') file_handler.setLevel(logging.INFO) file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')) logger.addHandler(file_handler) return logger
+class PerformanceLogger:
+    """Advanced logging with performance metrics"""
+    
+    @staticmethod
+    def setup_logging():
+        """Setup advanced logging"""
+        logger = logging.getLogger('DeepLearningBot')
+        logger.setLevel(getattr(logging, UltimateConfig.LOG_LEVEL))
+        
+        # Clear existing handlers
+        logger.handlers.clear()
+        
+        # Color formatter
+        class ColorFormatter(logging.Formatter):
+            COLORS = {
+                'DEBUG': '\033[36m',
+                'INFO': '\033[32m',
+                'WARNING': '\033[33m',
+                'ERROR': '\033[31m',
+                'CRITICAL': '\033[41m',
+                'TRADE': '\033[35m',     # Purple for trades
+                'PROFIT': '\033[92m',    # Bright green for profits
+                'LOSS': '\033[91m',      # Bright red for losses
+            }
+            RESET = '\033[0m'
+            
+            def format(self, record):
+                log_color = self.COLORS.get(record.levelname, '\033[37m')
+                if hasattr(record, 'trade_type'):
+                    if record.trade_type == 'profit':
+                        log_color = self.COLORS['PROFIT']
+                    elif record.trade_type == 'loss':
+                        log_color = self.COLORS['LOSS']
+                    elif record.trade_type == 'trade':
+                        log_color = self.COLORS['TRADE']
+                
+                message = super().format(record)
+                return f"{log_color}{message}{self.RESET}"
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(getattr(logging, UltimateConfig.LOG_LEVEL))
+        console_handler.setFormatter(ColorFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(console_handler)
+        
+        # File handler
+        file_handler = logging.FileHandler('deep_learning_bot.log')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
+        
+        return logger
 
 logger = PerformanceLogger.setup_logging()
 
-# ============================================================================ # DEEP LEARNING PREDICTION ENGINE # ============================================================================
+# ============================================================================
+# DEEP LEARNING PREDICTION ENGINE
+# ============================================================================
 
-class DeepLearningPredictor: """Deep Learning prediction engine with ensemble methods""" def __init__(self): self.models = {} self.scalers = {} self.feature_importance = {} self.training_history = defaultdict(list) logger.info("Deep Learning Predictor initialized") def create_features(self, df: pd.DataFrame) -> pd.DataFrame: """Create advanced features for deep learning""" try: # Price features df['returns'] = df['close'].pct_change() df['log_returns'] = np.log(df['close'] / df['close'].shift(1)) df['high_low_pct'] = (df['high'] - df['low']) / df['close'] df['close_open_pct'] = (df['close'] - df['open']) / df['open'] # Multiple moving averages for window in [3, 5, 8, 13, 21, 34]: df[f'sma_{window}'] = df['close'].rolling(window=window).mean() df[f'ema_{window}'] = df['close'].ewm(span=window).mean() # Price position relative to MAs - تأكد من وجود الأعمدة أولاً for window in [5, 10, 20]: sma_col = f'sma_{window}' ema_col = f'ema_{window}' # تحقق من وجود العمود قبل استخدامه if sma_col in df.columns: # استبدل الصفر بـ NaN لتجنب القسمة على الصفر df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan) else: # إذا لم يكن موجوداً، أنشئه الآن df[sma_col] = df['close'].rolling(window=window).mean() df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan) if ema_col in df.columns: df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan) else: df[ema_col] = df['close'].ewm(span=window).mean() df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan) # RSI variations for period in [7, 14, 21]: delta = df['close'].diff() gain = (delta.where(delta > 0, 0)).rolling(window=period).mean() loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean() rs = gain / loss df[f'rsi_{period}'] = 100 - (100 / (1 + rs)) # MACD variations ema_12 = df['close'].ewm(span=12).mean() ema_26 = df['close'].ewm(span=26).mean() df['macd'] = ema_12 - ema_26 df['macd_signal'] = df['macd'].ewm(span=9).mean() df['macd_hist'] = df['macd'] - df['macd_signal'] # Bollinger Bands variations for window in [10, 20]: bb_middle = df['close'].rolling(window=window).mean() bb_std = df['close'].rolling(window=window).std() df[f'bb_upper_{window}'] = bb_middle + (bb_std * 2) df[f'bb_lower_{window}'] = bb_middle - (bb_std * 2) df[f'bb_width_{window}'] = (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) / bb_middle df[f'bb_position_{window}'] = (df['close'] - df[f'bb_lower_{window}']) / (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) # Volume features df['volume_sma'] = df['volume'].rolling(window=20).mean() df['volume_ratio'] = df['volume'] / df['volume_sma'] df['obv'] = self.calculate_obv(df) # Volatility features df['atr'] = self.calculate_atr(df) for period in [5, 10, 20]: df[f'volatility_{period}'] = df['returns'].rolling(window=period).std() # Statistical features df['skewness_20'] = df['returns'].rolling(window=20).skew() df['kurtosis_20'] = df['returns'].rolling(window=20).kurt() # Momentum indicators df['roc_5'] = (df['close'] / df['close'].shift(5) - 1) * 100 df['roc_10'] = (df['close'] / df['close'].shift(10) - 1) * 100 df['momentum_5'] = df['close'] - df['close'].shift(5) # Price patterns df['is_doji'] = self.detect_doji(df) df['is_marubozu'] = self.detect_marubozu(df) df['is_engulfing'] = self.detect_engulfing(df) df['is_hammer'] = self.detect_hammer(df) # Market structure df['higher_high'] = (df['high'] > df['high'].shift(1)) & (df['high'].shift(1) > df['high'].shift(2)) df['lower_low'] = (df['low'] < df['low'].shift(1)) & (df['low'].shift(1) < df['low'].shift(2)) df['hhhc'] = (df['high'] > df['high'].shift(1)) & (df['close'] > df['close'].shift(1)) df['lllc'] = (df['low'] < df['low'].shift(1)) & (df['close'] < df['close'].shift(1)) # Support and Resistance df['near_resistance'] = (df['high'] / df['high'].rolling(20).max() > 0.98) df['near_support'] = (df['low'] / df['low'].rolling(20).min() < 1.02) # Time-based features df['hour'] = df.index.hour df['minute'] = df.index.minute df['day_of_week'] = df.index.dayofweek # Fill NaN values df = df.fillna(method='bfill').fillna(method='ffill') # معالجة إضافية للقيم اللانهائية df = df.replace([np.inf, -np.inf], np.nan) df = df.fillna(0) return df except Exception as e: logger.error(f"Error creating features: {e}") return df def calculate_obv(self, df: pd.DataFrame) -> pd.Series: """Calculate On-Balance Volume""" obv = np.zeros(len(df)) obv[0] = 0 for i in range(1, len(df)): if df['close'].iloc[i] > df['close'].iloc[i-1]: obv[i] = obv[i-1] + df['volume'].iloc[i] elif df['close'].iloc[i] < df['close'].iloc[i-1]: obv[i] = obv[i-1] - df['volume'].iloc[i] else: obv[i] = obv[i-1] return pd.Series(obv, index=df.index) def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series: """Calculate Average True Range""" high_low = df['high'] - df['low'] high_close = np.abs(df['high'] - df['close'].shift()) low_close = np.abs(df['low'] - df['close'].shift()) ranges = pd.concat([high_low, high_close, low_close], axis=1) true_range = np.max(ranges, axis=1) return true_range.rolling(period).mean() def detect_doji(self, df: pd.DataFrame, threshold: float = 0.1) -> pd.Series: """Detect Doji candlestick pattern""" body = np.abs(df['close'] - df['open']) total_range = df['high'] - df['low'] return body / total_range < threshold def detect_marubozu(self, df: pd.DataFrame, threshold: float = 0.9) -> pd.Series: """Detect Marubozu candlestick pattern""" body = np.abs(df['close'] - df['open']) total_range = df['high'] - df['low'] upper_shadow = df['high'] - df[['open', 'close']].max(axis=1) lower_shadow = df[['open', 'close']].min(axis=1) - df['low'] return (body / total_range > threshold) & (upper_shadow < body * 0.1) & (lower_shadow < body * 0.1) def detect_engulfing(self, df: pd.DataFrame) -> pd.Series: """Detect engulfing patterns""" # Bullish engulfing bullish = ( (df['close'] > df['open']) & (df['close'].shift(1) < df['open'].shift(1)) & (df['close'] > df['open'].shift(1)) & (df['open'] < df['close'].shift(1)) ) # Bearish engulfing bearish = ( (df['close'] < df['open']) & (df['close'].shift(1) > df['open'].shift(1)) & (df['close'] < df['open'].shift(1)) & (df['open'] > df['close'].shift(1)) ) return bullish | bearish def detect_hammer(self, df: pd.DataFrame) -> pd.Series: """Detect hammer candlestick pattern""" body = np.abs(df['close'] - df['open']) lower_shadow = df[['open', 'close']].min(axis=1) - df['low'] upper_shadow = df['high'] - df[['open', 'close']].max(axis=1) is_hammer = ( (body < (df['high'] - df['low']) * 0.3) & (lower_shadow > body * 2) & (upper_shadow < body * 0.3) ) return is_hammer def train_ensemble_model(self, symbol: str, features: pd.DataFrame, target: pd.Series): """Train ensemble of models for prediction""" try: # Prepare data X = features.values y = target.values if len(X) < 50: logger.warning(f"Insufficient data for {symbol}") return # تنظيف البيانات من NaN قبل التدريب
+class DeepLearningPredictor:
+    """Deep Learning prediction engine with ensemble methods"""
+    
+    def __init__(self):
+        self.models = {}
+        self.scalers = {}
+        self.feature_importance = {}
+        self.training_history = defaultdict(list)
+        logger.info("Deep Learning Predictor initialized")
+    
+    def create_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create advanced features for deep learning"""
+        try:
+            # Price features
+            df['returns'] = df['close'].pct_change()
+            df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
+            df['high_low_pct'] = (df['high'] - df['low']) / df['close']
+            df['close_open_pct'] = (df['close'] - df['open']) / df['open']
+            
+            # Multiple moving averages
+            for window in [3, 5, 8, 13, 21, 34]:
+                df[f'sma_{window}'] = df['close'].rolling(window=window).mean()
+                df[f'ema_{window}'] = df['close'].ewm(span=window).mean()
+            
+            # Price position relative to MAs - تأكد من وجود الأعمدة أولاً
+            for window in [5, 10, 20]:
+                sma_col = f'sma_{window}'
+                ema_col = f'ema_{window}'
+                
+                # تحقق من وجود العمود قبل استخدامه
+                if sma_col in df.columns:
+                    # استبدل الصفر بـ NaN لتجنب القسمة على الصفر
+                    df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan)
+                else:
+                    # إذا لم يكن موجوداً، أنشئه الآن
+                    df[sma_col] = df['close'].rolling(window=window).mean()
+                    df[f'price_{sma_col}_ratio'] = df['close'] / df[sma_col].replace(0, np.nan)
+                
+                if ema_col in df.columns:
+                    df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan)
+                else:
+                    df[ema_col] = df['close'].ewm(span=window).mean()
+                    df[f'price_{ema_col}_ratio'] = df['close'] / df[ema_col].replace(0, np.nan)
+            
+            # RSI variations
+            for period in [7, 14, 21]:
+                delta = df['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+                rs = gain / loss
+                df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
+            
+            # MACD variations
+            ema_12 = df['close'].ewm(span=12).mean()
+            ema_26 = df['close'].ewm(span=26).mean()
+            df['macd'] = ema_12 - ema_26
+            df['macd_signal'] = df['macd'].ewm(span=9).mean()
+            df['macd_hist'] = df['macd'] - df['macd_signal']
+            
+            # Bollinger Bands variations
+            for window in [10, 20]:
+                bb_middle = df['close'].rolling(window=window).mean()
+                bb_std = df['close'].rolling(window=window).std()
+                df[f'bb_upper_{window}'] = bb_middle + (bb_std * 2)
+                df[f'bb_lower_{window}'] = bb_middle - (bb_std * 2)
+                df[f'bb_width_{window}'] = (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}']) / bb_middle
+                df[f'bb_position_{window}'] = (df['close'] - df[f'bb_lower_{window}']) / (df[f'bb_upper_{window}'] - df[f'bb_lower_{window}'])
+            
+            # Volume features
+            df['volume_sma'] = df['volume'].rolling(window=20).mean()
+            df['volume_ratio'] = df['volume'] / df['volume_sma']
+            df['obv'] = self.calculate_obv(df)
+            
+            # Volatility features
+            df['atr'] = self.calculate_atr(df)
+            for period in [5, 10, 20]:
+                df[f'volatility_{period}'] = df['returns'].rolling(window=period).std()
+            
+            # Statistical features
+            df['skewness_20'] = df['returns'].rolling(window=20).skew()
+            df['kurtosis_20'] = df['returns'].rolling(window=20).kurt()
+            
+            # Momentum indicators
+            df['roc_5'] = (df['close'] / df['close'].shift(5) - 1) * 100
+            df['roc_10'] = (df['close'] / df['close'].shift(10) - 1) * 100
+            df['momentum_5'] = df['close'] - df['close'].shift(5)
+            
+            # Price patterns
+            df['is_doji'] = self.detect_doji(df)
+            df['is_marubozu'] = self.detect_marubozu(df)
+            df['is_engulfing'] = self.detect_engulfing(df)
+            df['is_hammer'] = self.detect_hammer(df)
+            
+            # Market structure
+            df['higher_high'] = (df['high'] > df['high'].shift(1)) & (df['high'].shift(1) > df['high'].shift(2))
+            df['lower_low'] = (df['low'] < df['low'].shift(1)) & (df['low'].shift(1) < df['low'].shift(2))
+            df['hhhc'] = (df['high'] > df['high'].shift(1)) & (df['close'] > df['close'].shift(1))
+            df['lllc'] = (df['low'] < df['low'].shift(1)) & (df['close'] < df['close'].shift(1))
+            
+            # Support and Resistance
+            df['near_resistance'] = (df['high'] / df['high'].rolling(20).max() > 0.98)
+            df['near_support'] = (df['low'] / df['low'].rolling(20).min() < 1.02)
+            
+            # Time-based features
+            df['hour'] = df.index.hour
+            df['minute'] = df.index.minute
+            df['day_of_week'] = df.index.dayofweek
+            
+            # Fill NaN values
+            df = df.fillna(method='bfill').fillna(method='ffill')
+            
+            # معالجة إضافية للقيم اللانهائية
+            df = df.replace([np.inf, -np.inf], np.nan)
+            df = df.fillna(0)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error creating features: {e}")
+            return df
+    
+    def calculate_obv(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate On-Balance Volume"""
+        obv = np.zeros(len(df))
+        obv[0] = 0
+        
+        for i in range(1, len(df)):
+            if df['close'].iloc[i] > df['close'].iloc[i-1]:
+                obv[i] = obv[i-1] + df['volume'].iloc[i]
+            elif df['close'].iloc[i] < df['close'].iloc[i-1]:
+                obv[i] = obv[i-1] - df['volume'].iloc[i]
+            else:
+                obv[i] = obv[i-1]
+        
+        return pd.Series(obv, index=df.index)
+    
+    def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate Average True Range"""
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        return true_range.rolling(period).mean()
+    
+    def detect_doji(self, df: pd.DataFrame, threshold: float = 0.1) -> pd.Series:
+        """Detect Doji candlestick pattern"""
+        body = np.abs(df['close'] - df['open'])
+        total_range = df['high'] - df['low']
+        return body / total_range < threshold
+    
+    def detect_marubozu(self, df: pd.DataFrame, threshold: float = 0.9) -> pd.Series:
+        """Detect Marubozu candlestick pattern"""
+        body = np.abs(df['close'] - df['open'])
+        total_range = df['high'] - df['low']
+        upper_shadow = df['high'] - df[['open', 'close']].max(axis=1)
+        lower_shadow = df[['open', 'close']].min(axis=1) - df['low']
+        return (body / total_range > threshold) & (upper_shadow < body * 0.1) & (lower_shadow < body * 0.1)
+    
+    def detect_engulfing(self, df: pd.DataFrame) -> pd.Series:
+        """Detect engulfing patterns"""
+        # Bullish engulfing
+        bullish = (
+            (df['close'] > df['open']) &
+            (df['close'].shift(1) < df['open'].shift(1)) &
+            (df['close'] > df['open'].shift(1)) &
+            (df['open'] < df['close'].shift(1))
+        )
+        
+        # Bearish engulfing
+        bearish = (
+            (df['close'] < df['open']) &
+            (df['close'].shift(1) > df['open'].shift(1)) &
+            (df['close'] < df['open'].shift(1)) &
+            (df['open'] > df['close'].shift(1))
+        )
+        
+        return bullish | bearish
+    
+    def detect_hammer(self, df: pd.DataFrame) -> pd.Series:
+        """Detect hammer candlestick pattern"""
+        body = np.abs(df['close'] - df['open'])
+        lower_shadow = df[['open', 'close']].min(axis=1) - df['low']
+        upper_shadow = df['high'] - df[['open', 'close']].max(axis=1)
+        
+        is_hammer = (
+            (body < (df['high'] - df['low']) * 0.3) &
+            (lower_shadow > body * 2) &
+            (upper_shadow < body * 0.3)
+        )
+        
+        return is_hammer
+    
+    def train_ensemble_model(self, symbol: str, features: pd.DataFrame, target: pd.Series):
+        """Train ensemble of models for prediction"""
+        try:
+            # Prepare data
+            X = features.values
+            y = target.values
+            
+            if len(X) < 50:
+                logger.warning(f"Insufficient data for {symbol}")
+                return
+            
+            # تنظيف البيانات من NaN قبل التدريب
+            if np.any(np.isnan(X)) or np.any(np.isnan(y)):
+                logger.warning(f"Found NaN values for {symbol}, cleaning data...")
+                
+                # احذف الصفوف التي تحتوي NaN
+                mask = ~(np.isnan(X).any(axis=1) | np.isnan(y))
+                X = X[mask]
+                y = y[mask]
+                
+                if len(X) < 30:  # تحقق من وجود بيانات كافية بعد التنظيف
+                    logger.warning(f"Insufficient clean data for {symbol} after NaN removal")
+                    return
+            
+            # Scale features
+            scaler = MinMaxScaler()
+            X_scaled = scaler.fit_transform(X)
+            
+            # Train multiple models
+            models = {
+                'xgboost': xgb.XGBClassifier(
+                    n_estimators=100,
+                    max_depth=5,
+                    learning_rate=0.1,
+                    random_state=42,
+                    use_label_encoder=False,
+                    eval_metric='logloss'
+                ),
+                'random_forest': RandomForestClassifier(
+                    n_estimators=100,
+                    max_depth=10,
+                    random_state=42
+                ),
+                'gradient_boosting': GradientBoostingClassifier(
+                    n_estimators=100,
+                    max_depth=5,
+                    learning_rate=0.1,
+                    random_state=42,
+                    subsample=0.8
+                )
+            }
+            
+            # Train each model
+            trained_models = {}
+            for name, model in models.items():
+                model.fit(X_scaled, y)
+                trained_models[name] = model
+            
+            # Store models and scaler
+            self.models[symbol] = trained_models
+            self.scalers[symbol] = scaler
+            
+            logger.info(f"Ensemble model trained for {symbol} with {len(X)} samples")
+            
+        except Exception as e:
+            logger.error(f"Error training model for {symbol}: {e}")
+    
+    def predict_with_confidence(self, symbol: str, features: pd.DataFrame) -> Dict:
+        """Predict with ensemble confidence"""
+        try:
+            if symbol not in self.models:
+                return {'direction': 'HOLD', 'confidence': 0, 'reason': 'Model not trained'}
+            
+            # Prepare features
+            X = features.values
+            scaler = self.scalers[symbol]
+            X_scaled = scaler.transform(X)
+            
+            # Get predictions from all models
+            predictions = []
+            confidences = []
+            
+            for model_name, model in self.models[symbol].items():
+                pred = model.predict(X_scaled)[-1]  # Latest prediction
+                proba = model.predict_proba(X_scaled)[-1]
+                confidence = np.max(proba)
+                
+                predictions.append(pred)
+                confidences.append(confidence)
+            
+            # Ensemble voting
+            unique_preds, counts = np.unique(predictions, return_counts=True)
+            majority_pred = unique_preds[np.argmax(counts)]
+            
+            # Calculate ensemble confidence
+            avg_confidence = np.mean(confidences)
+            agreement = max(counts) / len(predictions)
+            ensemble_confidence = avg_confidence * agreement
+            
+            # Map prediction to direction
+            direction_map = {0: 'SELL', 1: 'BUY', 2: 'HOLD'}
+            direction = direction_map.get(majority_pred, 'HOLD')
+            
+            # Only accept if confidence is high enough
+            if ensemble_confidence < UltimateConfig.DL_MIN_CONFIDENCE:
+                return {'direction': 'HOLD', 'confidence': ensemble_confidence, 'reason': 'Low confidence'}
+            
+            # Generate reason based on features
+            reason = self.generate_prediction_reason(features.iloc[-1], direction)
+            
+            return {
+                'direction': direction,
+                'confidence': ensemble_confidence,
+                'reason': reason,
+                'model_agreement': agreement,
+                'avg_confidence': avg_confidence,
+                'predictions': predictions,
+                'confidences': confidences
+            }
+            
+        except Exception as e:
+            logger.error(f"Error predicting for {symbol}: {e}")
+            return {'direction': 'HOLD', 'confidence': 0, 'reason': f'Error: {str(e)}'}
+    
+    def generate_prediction_reason(self, features: pd.Series, direction: str) -> str:
+        """Generate human-readable reason for prediction"""
+        reasons = []
+        
+        # RSI analysis
+        if 'rsi_14' in features:
+            rsi = features['rsi_14']
+            if direction == 'BUY' and rsi < 30:
+                reasons.append(f"RSI oversold ({rsi:.1f})")
+            elif direction == 'SELL' and rsi > 70:
+                reasons.append(f"RSI overbought ({rsi:.1f})")
+        
+        # MACD analysis
+        if 'macd_hist' in features:
+            macd_hist = features['macd_hist']
+            if direction == 'BUY' and macd_hist > 0:
+                reasons.append("MACD bullish")
+            elif direction == 'SELL' and macd_hist < 0:
+                reasons.append("MACD bearish")
+        
+        # Volume analysis
+        if 'volume_ratio' in features:
+            vol_ratio = features['volume_ratio']
+            if vol_ratio > 1.5:
+                reasons.append(f"High volume (×{vol_ratio:.1f})")
+        
+        # Bollinger Bands
+        if 'bb_position_20' in features:
+            bb_pos = features['bb_position_20']
+            if direction == 'BUY' and bb_pos < 0.2:
+                reasons.append("Near BB lower band")
+            elif direction == 'SELL' and bb_pos > 0.8:
+                reasons.append("Near BB upper band")
+        
+        # Price momentum
+        if 'momentum_5' in features:
+            momentum = features['momentum_5']
+            if direction == 'BUY' and momentum > 0:
+                reasons.append(f"Positive momentum ({momentum:.4f})")
+            elif direction == 'SELL' and momentum < 0:
+                reasons.append(f"Negative momentum ({momentum:.4f})")
+        
+        # Candlestick patterns
+        if features.get('is_hammer', False) and direction == 'BUY':
+            reasons.append("Hammer pattern")
+        if features.get('is_engulfing', False):
+            reasons.append("Engulfing pattern")
+        
+        # Market structure
+        if features.get('higher_high', False) and direction == 'BUY':
+            reasons.append("Higher high formation")
+        if features.get('lower_low', False) and direction == 'SELL':
+            reasons.append("Lower low formation")
+        
+        return ', '.join(reasons) if reasons else "Technical indicators alignment"
 
- # تنظيف البيانات من NaN قبل التدريب - FIXED VERSION try: # تحويل البيانات إلى float أولاً X = X.astype(float) y = y.astype(float) # الآن تحقق من NaN mask = ~(np.isnan(X).any(axis=1) | np.isnan(y)) X = X[mask] y = y[mask] if len(X) < 30: # تحقق من وجود بيانات كافية بعد التنظيف logger.warning(f"Insufficient clean data for {symbol} after NaN removal ({len(X)} samples)") return except (ValueError, TypeError) as e: logger.warning(f"Error cleaning data for {symbol}: {e}. Skipping training.") return if len(X) < 30: # تحقق من وجود بيانات كافية بعد التنظيف logger.warning(f"Insufficient clean data for {symbol} after NaN removal") return # Scale features scaler = MinMaxScaler() X_scaled = scaler.fit_transform(X) # Train multiple models models = { 'xgboost': xgb.XGBClassifier( n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42, use_label_encoder=False, eval_metric='logloss' ), 'random_forest': RandomForestClassifier( n_estimators=100, max_depth=10, random_state=42 ), 'gradient_boosting': GradientBoostingClassifier( n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42, subsample=0.8 ) } # Train each model trained_models = {} for name, model in models.items(): model.fit(X_scaled, y) trained_models[name] = model # Store models and scaler self.models[symbol] = trained_models self.scalers[symbol] = scaler logger.info(f"Ensemble model trained for {symbol} with {len(X)} samples") except Exception as e: logger.error(f"Error training model for {symbol}: {e}") def predict_with_confidence(self, symbol: str, features: pd.DataFrame) -> Dict: """Predict with ensemble confidence""" try: if symbol not in self.models: return {'direction': 'HOLD', 'confidence': 0, 'reason': 'Model not trained'} # Prepare features X = features.values scaler = self.scalers[symbol] X_scaled = scaler.transform(X) # Get predictions from all models predictions = [] confidences = [] for model_name, model in self.models[symbol].items(): pred = model.predict(X_scaled)[-1] # Latest prediction proba = model.predict_proba(X_scaled)[-1] confidence = np.max(proba) predictions.append(pred) confidences.append(confidence) # Ensemble voting unique_preds, counts = np.unique(predictions, return_counts=True) majority_pred = unique_preds[np.argmax(counts)] # Calculate ensemble confidence avg_confidence = np.mean(confidences) agreement = max(counts) / len(predictions) ensemble_confidence = avg_confidence * agreement # Map prediction to direction direction_map = {0: 'SELL', 1: 'BUY', 2: 'HOLD'} direction = direction_map.get(majority_pred, 'HOLD') # Only accept if confidence is high enough if ensemble_confidence < UltimateConfig.DL_MIN_CONFIDENCE: return {'direction': 'HOLD', 'confidence': ensemble_confidence, 'reason': 'Low confidence'} # Generate reason based on features reason = self.generate_prediction_reason(features.iloc[-1], direction) return { 'direction': direction, 'confidence': ensemble_confidence, 'reason': reason, 'model_agreement': agreement, 'avg_confidence': avg_confidence, 'predictions': predictions, 'confidences': confidences } except Exception as e: logger.error(f"Error predicting for {symbol}: {e}") return {'direction': 'HOLD', 'confidence': 0, 'reason': f'Error: {str(e)}'} def generate_prediction_reason(self, features: pd.Series, direction: str) -> str: """Generate human-readable reason for prediction""" reasons = [] # RSI analysis if 'rsi_14' in features: rsi = features['rsi_14'] if direction == 'BUY' and rsi < 30: reasons.append(f"RSI oversold ({rsi:.1f})") elif direction == 'SELL' and rsi > 70: reasons.append(f"RSI overbought ({rsi:.1f})") # MACD analysis if 'macd_hist' in features: macd_hist = features['macd_hist'] if direction == 'BUY' and macd_hist > 0: reasons.append("MACD bullish") elif direction == 'SELL' and macd_hist < 0: reasons.append("MACD bearish") # Volume analysis if 'volume_ratio' in features: vol_ratio = features['volume_ratio'] if vol_ratio > 1.5: reasons.append(f"High volume (×{vol_ratio:.1f})") # Bollinger Bands if 'bb_position_20' in features: bb_pos = features['bb_position_20'] if direction == 'BUY' and bb_pos < 0.2: reasons.append("Near BB lower band") elif direction == 'SELL' and bb_pos > 0.8: reasons.append("Near BB upper band") # Price momentum if 'momentum_5' in features: momentum = features['momentum_5'] if direction == 'BUY' and momentum > 0: reasons.append(f"Positive momentum ({momentum:.4f})") elif direction == 'SELL' and momentum < 0: reasons.append(f"Negative momentum ({momentum:.4f})") # Candlestick patterns if features.get('is_hammer', False) and direction == 'BUY': reasons.append("Hammer pattern") if features.get('is_engulfing', False): reasons.append("Engulfing pattern") # Market structure if features.get('higher_high', False) and direction == 'BUY': reasons.append("Higher high formation") if features.get('lower_low', False) and direction == 'SELL': reasons.append("Lower low formation") return ', '.join(reasons) if reasons else "Technical indicators alignment"
+# ============================================================================
+# VOLATILITY ANALYZER
+# ============================================================================
 
-# ============================================================================ # VOLATILITY ANALYZER # ============================================================================
+class VolatilityAnalyzer:
+    """Analyze volatility for optimal trading"""
+    
+    def __init__(self):
+        self.volatility_history = defaultdict(list)
+        self.symbol_volatility = {}
+        logger.info("Volatility Analyzer initialized")
+    
+    def analyze_volatility(self, df: pd.DataFrame, symbol: str) -> Dict:
+        """Analyze volatility at multiple timeframes"""
+        try:
+            returns = df['close'].pct_change().dropna()
+            
+            # Calculate volatility at different periods
+            volatilities = {}
+            for period in UltimateConfig.VOLATILITY_PERIODS:
+                if len(returns) >= period:
+                    volatilities[f'vol_{period}'] = returns.tail(period).std() * np.sqrt(365 * 24 * 60)  # Annualized
+            
+            # Calculate current volatility
+            current_vol = returns.tail(5).std() * np.sqrt(365 * 24 * 60)
+            
+            # Determine volatility regime
+            vol_regime = 'medium'
+            if current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['low']:
+                vol_regime = 'low'
+            elif current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['medium']:
+                vol_regime = 'medium'
+            elif current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['high']:
+                vol_regime = 'high'
+            else:
+                vol_regime = 'extreme'
+            
+            # Calculate volatility ratio (current vs average)
+            avg_vol = np.mean(list(volatilities.values())) if volatilities else current_vol
+            vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
+            
+            # Store history
+            self.volatility_history[symbol].append(current_vol)
+            if len(self.volatility_history[symbol]) > 100:
+                self.volatility_history[symbol].pop(0)
+            
+            # Update symbol volatility
+            self.symbol_volatility[symbol] = {
+                'current': current_vol,
+                'regime': vol_regime,
+                'ratio': vol_ratio,
+                'multiplier': UltimateConfig.VOLATILITY_MULTIPLIER[vol_regime]
+            }
+            
+            return self.symbol_volatility[symbol]
+            
+        except Exception as e:
+            logger.error(f"Error analyzing volatility for {symbol}: {e}")
+            return {'current': 0, 'regime': 'medium', 'ratio': 1, 'multiplier': 1.0}
+    
+    def get_trading_params(self, symbol: str) -> Dict:
+        """Get trading parameters based on volatility"""
+        vol_data = self.symbol_volatility.get(symbol, {'regime': 'medium', 'multiplier': 1.0})
+        multiplier = vol_data['multiplier']
+        
+        # Adjust parameters based on volatility
+        take_profit = UltimateConfig.BASE_TAKE_PROFIT * multiplier
+        stop_loss = UltimateConfig.BASE_STOP_LOSS * multiplier
+        trailing_stop = UltimateConfig.TRAILING_STOP * multiplier
+        
+        # Adjust for time of day
+        hour = datetime.now().hour
+        if hour in UltimateConfig.PEAK_HOURS:
+            take_profit *= UltimateConfig.PEAK_MULTIPLIER
+            stop_loss *= UltimateConfig.PEAK_MULTIPLIER
+        
+        return {
+            'take_profit_pct': min(take_profit, 0.005),  # Max 0.5%
+            'stop_loss_pct': min(stop_loss, 0.003),      # Max 0.3%
+            'trailing_stop_pct': trailing_stop,
+            'volatility_regime': vol_data['regime'],
+            'volatility_multiplier': multiplier,
+            'is_peak_hour': hour in UltimateConfig.PEAK_HOURS
+        }
 
-class VolatilityAnalyzer: """Analyze volatility for optimal trading""" def __init__(self): self.volatility_history = defaultdict(list) self.symbol_volatility = {} logger.info("Volatility Analyzer initialized") def analyze_volatility(self, df: pd.DataFrame, symbol: str) -> Dict: """Analyze volatility at multiple timeframes""" try: returns = df['close'].pct_change().dropna() # Calculate volatility at different periods volatilities = {} for period in UltimateConfig.VOLATILITY_PERIODS: if len(returns) >= period: volatilities[f'vol_{period}'] = returns.tail(period).std() * np.sqrt(365 * 24 * 60) # Annualized # Calculate current volatility current_vol = returns.tail(5).std() * np.sqrt(365 * 24 * 60) # Determine volatility regime vol_regime = 'medium' if current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['low']: vol_regime = 'low' elif current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['medium']: vol_regime = 'medium' elif current_vol < UltimateConfig.VOLATILITY_THRESHOLDS['high']: vol_regime = 'high' else: vol_regime = 'extreme' # Calculate volatility ratio (current vs average) avg_vol = np.mean(list(volatilities.values())) if volatilities else current_vol vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1 # Store history self.volatility_history[symbol].append(current_vol) if len(self.volatility_history[symbol]) > 100: self.volatility_history[symbol].pop(0) # Update symbol volatility self.symbol_volatility[symbol] = { 'current': current_vol, 'regime': vol_regime, 'ratio': vol_ratio, 'multiplier': UltimateConfig.VOLATILITY_MULTIPLIER[vol_regime] } return self.symbol_volatility[symbol] except Exception as e: logger.error(f"Error analyzing volatility for {symbol}: {e}") return {'current': 0, 'regime': 'medium', 'ratio': 1, 'multiplier': 1.0} def get_trading_params(self, symbol: str) -> Dict: """Get trading parameters based on volatility""" vol_data = self.symbol_volatility.get(symbol, {'regime': 'medium', 'multiplier': 1.0}) multiplier = vol_data['multiplier'] # Adjust parameters based on volatility take_profit = UltimateConfig.BASE_TAKE_PROFIT * multiplier stop_loss = UltimateConfig.BASE_STOP_LOSS * multiplier trailing_stop = UltimateConfig.TRAILING_STOP * multiplier # Adjust for time of day hour = datetime.now().hour if hour in UltimateConfig.PEAK_HOURS: take_profit *= UltimateConfig.PEAK_MULTIPLIER stop_loss *= UltimateConfig.PEAK_MULTIPLIER return { 'take_profit_pct': min(take_profit, 0.005), # Max 0.5% 'stop_loss_pct': min(stop_loss, 0.003), # Max 0.3% 'trailing_stop_pct': trailing_stop, 'volatility_regime': vol_data['regime'], 'volatility_multiplier': multiplier, 'is_peak_hour': hour in UltimateConfig.PEAK_HOURS }
+# ============================================================================
+# ADVANCED EXECUTION ENGINE
+# ============================================================================
 
-# ============================================================================ # ADVANCED EXECUTION ENGINE # ============================================================================
+class AdvancedExecutionEngine:
+    """Advanced execution engine with smart order routing"""
+    
+    def __init__(self):
+        self.exchange = ccxt.binance({
+            'enableRateLimit': True,
+            'timeout': 10000,
+            'options': {
+                'defaultType': 'spot',
+                'adjustForTimeDifference': True,
+            }
+        })
+        self.ticker_cache = {}
+        self.orderbook_cache = {}
+        self.cache_time = 1  # 1 second cache
+        logger.info("Advanced Execution Engine initialized")
+    
+    def get_market_intelligence(self, symbol: str) -> Dict:
+        """Get comprehensive market intelligence"""
+        try:
+            # Get ticker
+            ticker = self.exchange.fetch_ticker(symbol)
+            
+            # Get order book
+            orderbook = self.exchange.fetch_order_book(symbol, limit=10)
+            
+            # Get recent trades
+            trades = self.exchange.fetch_trades(symbol, limit=10)
+            
+            # Calculate spread metrics
+            bid = ticker['bid']
+            ask = ticker['ask']
+            spread_pct = (ask - bid) / bid if bid > 0 else 0
+            
+            # Order book analysis
+            bid_volume = sum([bid[1] for bid in orderbook['bids'][:5]])
+            ask_volume = sum([ask[1] for ask in orderbook['asks'][:5]])
+            orderbook_imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume) if (bid_volume + ask_volume) > 0 else 0
+            
+            # Trade flow analysis
+            buy_volume = sum([t['amount'] for t in trades if t['side'] == 'buy'])
+            sell_volume = sum([t['amount'] for t in trades if t['side'] == 'sell'])
+            trade_imbalance = (buy_volume - sell_volume) / (buy_volume + sell_volume) if (buy_volume + sell_volume) > 0 else 0
+            
+            # Price levels
+            support_levels = self.calculate_support_levels(orderbook['bids'])
+            resistance_levels = self.calculate_resistance_levels(orderbook['asks'])
+            
+            return {
+                'symbol': symbol,
+                'bid': bid,
+                'ask': ask,
+                'last': ticker['last'],
+                'spread_pct': spread_pct,
+                'bid_volume': bid_volume,
+                'ask_volume': ask_volume,
+                'orderbook_imbalance': orderbook_imbalance,
+                'buy_volume': buy_volume,
+                'sell_volume': sell_volume,
+                'trade_imbalance': trade_imbalance,
+                'support_levels': support_levels,
+                'resistance_levels': resistance_levels,
+                'volume': ticker['quoteVolume'],
+                'timestamp': datetime.now()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting market intelligence for {symbol}: {e}")
+            return None
+    
+    def calculate_support_levels(self, bids: List) -> List:
+        """Calculate support levels from order book"""
+        levels = []
+        cumulative_volume = 0
+        
+        for price, volume in bids[:5]:
+            cumulative_volume += volume
+            levels.append({
+                'price': price,
+                'volume': volume,
+                'cumulative_volume': cumulative_volume,
+                'strength': cumulative_volume / sum([bid[1] for bid in bids[:5]])
+            })
+        
+        return levels
+    
+    def calculate_resistance_levels(self, asks: List) -> List:
+        """Calculate resistance levels from order book"""
+        levels = []
+        cumulative_volume = 0
+        
+        for price, volume in asks[:5]:
+            cumulative_volume += volume
+            levels.append({
+                'price': price,
+                'volume': volume,
+                'cumulative_volume': cumulative_volume,
+                'strength': cumulative_volume / sum([ask[1] for ask in asks[:5]])
+            })
+        
+        return levels
+    
+    def calculate_optimal_execution(self, symbol: str, direction: str, size: float) -> Dict:
+        """Calculate optimal execution parameters"""
+        try:
+            market_data = self.get_market_intelligence(symbol)
+            if not market_data:
+                return None
+            
+            # Calculate optimal price based on direction and order book
+            if direction == 'BUY':
+                # For buys, consider paying slightly above best ask for quick fill
+                optimal_price = market_data['ask'] * 1.00005
+                
+                # Adjust based on order book imbalance
+                if market_data['orderbook_imbalance'] > 0.2:
+                    optimal_price = market_data['ask'] * 1.0001  # Pay more if strong buying pressure
+                elif market_data['trade_imbalance'] > 0.3:
+                    optimal_price = market_data['ask'] * 1.00015  # Pay even more with strong trade flow
+                    
+            else:  # SELL
+                # For sells, consider accepting slightly below best bid for quick fill
+                optimal_price = market_data['bid'] * 0.99995
+                
+                # Adjust based on order book imbalance
+                if market_data['orderbook_imbalance'] < -0.2:
+                    optimal_price = market_data['bid'] * 0.9999  # Accept less if strong selling pressure
+                elif market_data['trade_imbalance'] < -0.3:
+                    optimal_price = market_data['bid'] * 0.99985  # Accept even less with strong sell flow
+            
+            # Calculate slippage estimate
+            expected_slippage = market_data['spread_pct'] * 0.3  # Assume 30% of spread
+            
+            # Calculate total cost
+            if direction == 'BUY':
+                total_cost_pct = UltimateConfig.TAKER_FEE + (market_data['spread_pct'] / 2) + expected_slippage
+            else:
+                total_cost_pct = UltimateConfig.TAKER_FEE + (market_data['spread_pct'] / 2) + expected_slippage
+            
+            return {
+                'optimal_price': optimal_price,
+                'market_bid': market_data['bid'],
+                'market_ask': market_data['ask'],
+                'spread_pct': market_data['spread_pct'],
+                'expected_slippage': expected_slippage,
+                'total_cost_pct': total_cost_pct,
+                'orderbook_imbalance': market_data['orderbook_imbalance'],
+                'trade_imbalance': market_data['trade_imbalance'],
+                'support_strength': market_data['support_levels'][0]['strength'] if market_data['support_levels'] else 0,
+                'resistance_strength': market_data['resistance_levels'][0]['strength'] if market_data['resistance_levels'] else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating execution for {symbol}: {e}")
+            return None
+    
+    def is_tradable(self, symbol: str) -> bool:
+        """Check if symbol is tradable"""
+        try:
+            market_data = self.get_market_intelligence(symbol)
+            if not market_data:
+                return False
+            
+            # Check spread
+            if market_data['spread_pct'] > UltimateConfig.MAX_SPREAD:
+                return False
+            
+            if market_data['spread_pct'] < UltimateConfig.MIN_SPREAD:
+                return False  # Too tight for scalping profit
+            
+            # Check volume
+            if market_data['volume'] < 500000:  # $500k minimum
+                return False
+            
+            # Check order book depth
+            if market_data['bid_volume'] < 10000 or market_data['ask_volume'] < 10000:
+                return False
+            
+            # Check recent trade activity
+            if market_data['buy_volume'] + market_data['sell_volume'] < 10000:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking tradability for {symbol}: {e}")
+            return False
 
-class AdvancedExecutionEngine: """Advanced execution engine with smart order routing""" def __init__(self): self.exchange = ccxt.binance({ 'enableRateLimit': True, 'timeout': 10000, 'options': { 'defaultType': 'spot', 'adjustForTimeDifference': True, } }) self.ticker_cache = {} self.orderbook_cache = {} self.cache_time = 1 # 1 second cache logger.info("Advanced Execution Engine initialized") def get_market_intelligence(self, symbol: str) -> Dict: """Get comprehensive market intelligence""" try: # Get ticker ticker = self.exchange.fetch_ticker(symbol) # Get order book orderbook = self.exchange.fetch_order_book(symbol, limit=10) # Get recent trades trades = self.exchange.fetch_trades(symbol, limit=10) # Calculate spread metrics bid = ticker['bid'] ask = ticker['ask'] spread_pct = (ask - bid) / bid if bid > 0 else 0 # Order book analysis bid_volume = sum([bid[1] for bid in orderbook['bids'][:5]]) ask_volume = sum([ask[1] for ask in orderbook['asks'][:5]]) orderbook_imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume) if (bid_volume + ask_volume) > 0 else 0 # Trade flow analysis buy_volume = sum([t['amount'] for t in trades if t['side'] == 'buy']) sell_volume = sum([t['amount'] for t in trades if t['side'] == 'sell']) trade_imbalance = (buy_volume - sell_volume) / (buy_volume + sell_volume) if (buy_volume + sell_volume) > 0 else 0 # Price levels support_levels = self.calculate_support_levels(orderbook['bids']) resistance_levels = self.calculate_resistance_levels(orderbook['asks']) return { 'symbol': symbol, 'bid': bid, 'ask': ask, 'last': ticker['last'], 'spread_pct': spread_pct, 'bid_volume': bid_volume, 'ask_volume': ask_volume, 'orderbook_imbalance': orderbook_imbalance, 'buy_volume': buy_volume, 'sell_volume': sell_volume, 'trade_imbalance': trade_imbalance, 'support_levels': support_levels, 'resistance_levels': resistance_levels, 'volume': ticker['quoteVolume'], 'timestamp': datetime.now() } except Exception as e: logger.error(f"Error getting market intelligence for {symbol}: {e}") return None def calculate_support_levels(self, bids: List) -> List: """Calculate support levels from order book""" levels = [] cumulative_volume = 0 for price, volume in bids[:5]: cumulative_volume += volume levels.append({ 'price': price, 'volume': volume, 'cumulative_volume': cumulative_volume, 'strength': cumulative_volume / sum([bid[1] for bid in bids[:5]]) }) return levels def calculate_resistance_levels(self, asks: List) -> List: """Calculate resistance levels from order book""" levels = [] cumulative_volume = 0 for price, volume in asks[:5]: cumulative_volume += volume levels.append({ 'price': price, 'volume': volume, 'cumulative_volume': cumulative_volume, 'strength': cumulative_volume / sum([ask[1] for ask in asks[:5]]) }) return levels def calculate_optimal_execution(self, symbol: str, direction: str, size: float) -> Dict: """Calculate optimal execution parameters""" try: market_data = self.get_market_intelligence(symbol) if not market_data: return None # Calculate optimal price based on direction and order book if direction == 'BUY': # For buys, consider paying slightly above best ask for quick fill optimal_price = market_data['ask'] * 1.00005 # Adjust based on order book imbalance if market_data['orderbook_imbalance'] > 0.2: optimal_price = market_data['ask'] * 1.0001 # Pay more if strong buying pressure elif market_data['trade_imbalance'] > 0.3: optimal_price = market_data['ask'] * 1.00015 # Pay even more with strong trade flow else: # SELL # For sells, consider accepting slightly below best bid for quick fill optimal_price = market_data['bid'] * 0.99995 # Adjust based on order book imbalance if market_data['orderbook_imbalance'] < -0.2: optimal_price = market_data['bid'] * 0.9999 # Accept less if strong selling pressure elif market_data['trade_imbalance'] < -0.3: optimal_price = market_data['bid'] * 0.99985 # Accept even less with strong sell flow # Calculate slippage estimate expected_slippage = market_data['spread_pct'] * 0.3 # Assume 30% of spread # Calculate total cost if direction == 'BUY': total_cost_pct = UltimateConfig.TAKER_FEE + (market_data['spread_pct'] / 2) + expected_slippage else: total_cost_pct = UltimateConfig.TAKER_FEE + (market_data['spread_pct'] / 2) + expected_slippage return { 'optimal_price': optimal_price, 'market_bid': market_data['bid'], 'market_ask': market_data['ask'], 'spread_pct': market_data['spread_pct'], 'expected_slippage': expected_slippage, 'total_cost_pct': total_cost_pct, 'orderbook_imbalance': market_data['orderbook_imbalance'], 'trade_imbalance': market_data['trade_imbalance'], 'support_strength': market_data['support_levels'][0]['strength'] if market_data['support_levels'] else 0, 'resistance_strength': market_data['resistance_levels'][0]['strength'] if market_data['resistance_levels'] else 0 } except Exception as e: logger.error(f"Error calculating execution for {symbol}: {e}") return None def is_tradable(self, symbol: str) -> bool: """Check if symbol is tradable""" try: market_data = self.get_market_intelligence(symbol) if not market_data: return False # Check spread if market_data['spread_pct'] > UltimateConfig.MAX_SPREAD: return False if market_data['spread_pct'] < UltimateConfig.MIN_SPREAD: return False # Too tight for scalping profit # Check volume if market_data['volume'] < 500000: # $500k minimum return False # Check order book depth if market_data['bid_volume'] < 10000 or market_data['ask_volume'] < 10000: return False # Check recent trade activity if market_data['buy_volume'] + market_data['sell_volume'] < 10000: return False return True except Exception as e: logger.error(f"Error checking tradability for {symbol}: {e}") return False
+# ============================================================================
+# AI-POWERED RISK MANAGER
+# ============================================================================
 
-# ============================================================================ # AI-POWERED RISK MANAGER # ============================================================================
+class AIRiskManager:
+    """AI-powered risk management with adaptive strategies"""
+    
+    def __init__(self, initial_capital: float):
+        self.capital = initial_capital
+        self.open_trades = []
+        self.trade_history = []
+        self.daily_pnl = 0
+        self.hourly_pnl = 0
+        self.hourly_start = datetime.now()
+        self.daily_start = datetime.now().date()
+        
+        # Performance tracking
+        self.win_streak = 0
+        self.loss_streak = 0
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
+        
+        # Adaptive risk parameters
+        self.base_risk = UltimateConfig.RISK_PER_TRADE
+        self.current_risk = self.base_risk
+        self.risk_multiplier = 1.0
+        
+        # Statistics
+        self.total_trades = 0
+        self.winning_trades = 0
+        self.total_pnl = 0
+        
+        # Hourly tracking
+        self.hourly_trades = 0
+        self.hourly_target = initial_capital * UltimateConfig.HOURLY_TARGET
+        
+        logger.info("AI Risk Manager initialized")
+    
+    def calculate_adaptive_position(self, capital: float, entry_price: float,
+                                  stop_loss: float, confidence: float,
+                                  symbol: str, volatility_multiplier: float) -> Dict:
+        """Calculate adaptive position size"""
+        try:
+            # Base risk amount
+            base_risk_amount = capital * self.current_risk
+            
+            # Confidence adjustment (0.7-1.3 range)
+            confidence_adj = 0.7 + (confidence * 0.6)  # Map 0-1 to 0.7-1.3
+            
+            # Streak adjustment
+            streak_adj = 1.0
+            if self.consecutive_wins >= 3:
+                streak_adj = 1.2  # Increase after 3 consecutive wins
+            elif self.consecutive_losses >= 2:
+                streak_adj = 0.7  # Decrease after 2 consecutive losses
+            
+            # Hourly performance adjustment
+            hourly_adj = 1.0
+            if self.hourly_pnl >= self.hourly_target * 0.8:  # Close to hourly target
+                hourly_adj = 0.8  # Reduce risk
+            
+            # Time of day adjustment
+            hour = datetime.now().hour
+            time_adj = UltimateConfig.PEAK_MULTIPLIER if hour in UltimateConfig.PEAK_HOURS else 1.0
+            
+            # Calculate adjusted risk
+            adjusted_risk = (base_risk_amount * confidence_adj * streak_adj * 
+                           hourly_adj * time_adj * volatility_multiplier)
+            
+            # Apply maximum limits
+            max_risk = capital * UltimateConfig.MAX_POSITION_SIZE
+            adjusted_risk = min(adjusted_risk, max_risk)
+            
+            # Calculate position size
+            price_risk = abs(entry_price - stop_loss)
+            if price_risk == 0:
+                return {'size': 0, 'risk_amount': 0}
+            
+            position_size = adjusted_risk / price_risk
+            
+            # Ensure minimum position (0.5% of capital)
+            min_position = (capital * 0.005) / entry_price
+            position_size = max(position_size, min_position)
+            
+            # Round appropriately
+            if symbol.endswith('/USDT'):
+                position_size = round(position_size, 6)
+            
+            # Calculate expected fees
+            entry_fee = position_size * entry_price * UltimateConfig.TAKER_FEE
+            exit_fee = position_size * entry_price * UltimateConfig.TAKER_FEE  # Estimate
+            
+            return {
+                'size': position_size,
+                'risk_amount': adjusted_risk,
+                'entry_fee': entry_fee,
+                'exit_fee': exit_fee,
+                'total_fees': entry_fee + exit_fee,
+                'confidence_adj': confidence_adj,
+                'streak_adj': streak_adj,
+                'hourly_adj': hourly_adj,
+                'time_adj': time_adj,
+                'volatility_multiplier': volatility_multiplier
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating position: {e}")
+            return {'size': 0, 'risk_amount': 0}
+    
+    def can_trade(self, symbol: str) -> Tuple[bool, str]:
+        """Check if trading is allowed"""
+        # Check daily loss
+        if self.daily_pnl <= -self.capital * UltimateConfig.MAX_DAILY_LOSS:
+            return False, f"Daily loss limit reached (${self.daily_pnl:.2f})"
+        
+        # Check open trades per symbol
+        symbol_trades = len([t for t in self.open_trades if t['symbol'] == symbol])
+        if symbol_trades >= UltimateConfig.MAX_SAME_SYMBOL:
+            return False, f"Max trades for {symbol} ({symbol_trades})"
+        
+        # Check total open trades
+        if len(self.open_trades) >= UltimateConfig.MAX_OPEN_TRADES:
+            return False, f"Max total open trades ({len(self.open_trades)})"
+        
+        # Check hourly target
+        if self.hourly_pnl >= self.hourly_target:
+            return False, f"Hourly target reached (${self.hourly_pnl:.2f})"
+        
+        # Check cooldown
+        recent_trades = [t for t in self.open_trades 
+                        if t['symbol'] == symbol 
+                        and datetime.now() - t['entry_time'] < timedelta(seconds=UltimateConfig.TRADE_COOLDOWN)]
+        if recent_trades:
+            return False, f"Cooldown active for {symbol}"
+        
+        # Check loss streak
+        if self.consecutive_losses >= 3:
+            return False, f"Loss streak ({self.consecutive_losses}), cooling down"
+        
+        return True, "OK"
+    
+    def update_performance(self, pnl: float):
+        """Update performance metrics"""
+        # Update streaks
+        if pnl > 0:
+            self.consecutive_wins += 1
+            self.consecutive_losses = 0
+            self.winning_trades += 1
+            self.win_streak = max(self.win_streak, self.consecutive_wins)
+        else:
+            self.consecutive_losses += 1
+            self.consecutive_wins = 0
+            self.loss_streak = max(self.loss_streak, self.consecutive_losses)
+        
+        # Update totals
+        self.total_trades += 1
+        self.total_pnl += pnl
+        self.daily_pnl += pnl
+        self.hourly_pnl += pnl
+        
+        # Update capital
+        self.capital += pnl
+        
+        # Reset hourly counter if needed
+        if datetime.now() - self.hourly_start >= timedelta(hours=1):
+            self.hourly_pnl = 0
+            self.hourly_start = datetime.now()
+            self.hourly_trades = 0
+        
+        # Adaptive risk adjustment
+        self.adjust_risk_level()
+    
+    def adjust_risk_level(self):
+        """Dynamically adjust risk level based on performance"""
+        win_rate = self.winning_trades / self.total_trades if self.total_trades > 0 else 0
+        
+        if win_rate > 0.7 and self.consecutive_wins >= 2:
+            # Increase risk when performing well
+            self.current_risk = min(self.base_risk * 1.3, 0.015)
+            self.risk_multiplier = 1.3
+        elif win_rate < 0.4 or self.consecutive_losses >= 2:
+            # Decrease risk when performing poorly
+            self.current_risk = max(self.base_risk * 0.7, 0.005)
+            self.risk_multiplier = 0.7
+        else:
+            # Normal risk
+            self.current_risk = self.base_risk
+            self.risk_multiplier = 1.0
+    
+    @property
+    def win_rate(self):
+        """Calculate win rate"""
+        if self.total_trades == 0:
+            return 0.0
+        return self.winning_trades / self.total_trades
+    
+    @property
+    def avg_trade_pnl(self):
+        """Calculate average trade P&L"""
+        if self.total_trades == 0:
+            return 0.0
+        return self.total_pnl / self.total_trades
 
-class AIRiskManager: """AI-powered risk management with adaptive strategies""" def __init__(self, initial_capital: float): self.capital = initial_capital self.open_trades = [] self.trade_history = [] self.daily_pnl = 0 self.hourly_pnl = 0 self.hourly_start = datetime.now() self.daily_start = datetime.now().date() # Performance tracking self.win_streak = 0 self.loss_streak = 0 self.consecutive_wins = 0 self.consecutive_losses = 0 # Adaptive risk parameters self.base_risk = UltimateConfig.RISK_PER_TRADE self.current_risk = self.base_risk self.risk_multiplier = 1.0 # Statistics self.total_trades = 0 self.winning_trades = 0 self.total_pnl = 0 # Hourly tracking self.hourly_trades = 0 self.hourly_target = initial_capital * UltimateConfig.HOURLY_TARGET logger.info("AI Risk Manager initialized") def calculate_adaptive_position(self, capital: float, entry_price: float, stop_loss: float, confidence: float, symbol: str, volatility_multiplier: float) -> Dict: """Calculate adaptive position size""" try: # Base risk amount base_risk_amount = capital * self.current_risk # Confidence adjustment (0.7-1.3 range) confidence_adj = 0.7 + (confidence * 0.6) # Map 0-1 to 0.7-1.3 # Streak adjustment streak_adj = 1.0 if self.consecutive_wins >= 3: streak_adj = 1.2 # Increase after 3 consecutive wins elif self.consecutive_losses >= 2: streak_adj = 0.7 # Decrease after 2 consecutive losses # Hourly performance adjustment hourly_adj = 1.0 if self.hourly_pnl >= self.hourly_target * 0.8: # Close to hourly target hourly_adj = 0.8 # Reduce risk # Time of day adjustment hour = datetime.now().hour time_adj = UltimateConfig.PEAK_MULTIPLIER if hour in UltimateConfig.PEAK_HOURS else 1.0 # Calculate adjusted risk adjusted_risk = (base_risk_amount * confidence_adj * streak_adj * hourly_adj * time_adj * volatility_multiplier) # Apply maximum limits max_risk = capital * UltimateConfig.MAX_POSITION_SIZE adjusted_risk = min(adjusted_risk, max_risk) # Calculate position size price_risk = abs(entry_price - stop_loss) if price_risk == 0: return {'size': 0, 'risk_amount': 0} position_size = adjusted_risk / price_risk # Ensure minimum position (0.5% of capital) min_position = (capital * 0.005) / entry_price position_size = max(position_size, min_position) # Round appropriately if symbol.endswith('/USDT'): position_size = round(position_size, 6) # Calculate expected fees entry_fee = position_size * entry_price * UltimateConfig.TAKER_FEE exit_fee = position_size * entry_price * UltimateConfig.TAKER_FEE # Estimate return { 'size': position_size, 'risk_amount': adjusted_risk, 'entry_fee': entry_fee, 'exit_fee': exit_fee, 'total_fees': entry_fee + exit_fee, 'confidence_adj': confidence_adj, 'streak_adj': streak_adj, 'hourly_adj': hourly_adj, 'time_adj': time_adj, 'volatility_multiplier': volatility_multiplier } except Exception as e: logger.error(f"Error calculating position: {e}") return {'size': 0, 'risk_amount': 0} def can_trade(self, symbol: str) -> Tuple[bool, str]: """Check if trading is allowed""" # Check daily loss if self.daily_pnl <= -self.capital * UltimateConfig.MAX_DAILY_LOSS: return False, f"Daily loss limit reached (${self.daily_pnl:.2f})" # Check open trades per symbol symbol_trades = len([t for t in self.open_trades if t['symbol'] == symbol]) if symbol_trades >= UltimateConfig.MAX_SAME_SYMBOL: return False, f"Max trades for {symbol} ({symbol_trades})" # Check total open trades if len(self.open_trades) >= UltimateConfig.MAX_OPEN_TRADES: return False, f"Max total open trades ({len(self.open_trades)})" # Check hourly target if self.hourly_pnl >= self.hourly_target: return False, f"Hourly target reached (${self.hourly_pnl:.2f})" # Check cooldown recent_trades = [t for t in self.open_trades if t['symbol'] == symbol and datetime.now() - t['entry_time'] < timedelta(seconds=UltimateConfig.TRADE_COOLDOWN)] if recent_trades: return False, f"Cooldown active for {symbol}" # Check loss streak if self.consecutive_losses >= 3: return False, f"Loss streak ({self.consecutive_losses}), cooling down" return True, "OK" def update_performance(self, pnl: float): """Update performance metrics""" # Update streaks if pnl > 0: self.consecutive_wins += 1 self.consecutive_losses = 0 self.winning_trades += 1 self.win_streak = max(self.win_streak, self.consecutive_wins) else: self.consecutive_losses += 1 self.consecutive_wins = 0 self.loss_streak = max(self.loss_streak, self.consecutive_losses) # Update totals self.total_trades += 1 self.total_pnl += pnl self.daily_pnl += pnl self.hourly_pnl += pnl # Update capital self.capital += pnl # Reset hourly counter if needed if datetime.now() - self.hourly_start >= timedelta(hours=1): self.hourly_pnl = 0 self.hourly_start = datetime.now() self.hourly_trades = 0 # Adaptive risk adjustment self.adjust_risk_level() def adjust_risk_level(self): """Dynamically adjust risk level based on performance""" win_rate = self.winning_trades / self.total_trades if self.total_trades > 0 else 0 if win_rate > 0.7 and self.consecutive_wins >= 2: # Increase risk when performing well self.current_risk = min(self.base_risk * 1.3, 0.015) self.risk_multiplier = 1.3 elif win_rate < 0.4 or self.consecutive_losses >= 2: # Decrease risk when performing poorly self.current_risk = max(self.base_risk * 0.7, 0.005) self.risk_multiplier = 0.7 else: # Normal risk self.current_risk = self.base_risk self.risk_multiplier = 1.0 @property def win_rate(self): """Calculate win rate""" if self.total_trades == 0: return 0.0 return self.winning_trades / self.total_trades @property def avg_trade_pnl(self): """Calculate average trade P&L""" if self.total_trades == 0: return 0.0 return self.total_pnl / self.total_trades
+# ============================================================================
+# ULTIMATE SCALPING BOT
+# ============================================================================
 
-# ============================================================================ # ULTIMATE SCALPING BOT # ============================================================================
+class UltimateScalpingBot:
+    """Ultimate scalping bot with deep learning"""
+    
+    def __init__(self):
+        # Core components
+        self.dl_predictor = DeepLearningPredictor()
+        self.vol_analyzer = VolatilityAnalyzer()
+        self.execution_engine = AdvancedExecutionEngine()
+        self.risk_manager = AIRiskManager(UltimateConfig.INITIAL_CAPITAL)
+        
+        # Data storage
+        self.symbol_data = {}
+        self.prediction_history = defaultdict(list)
+        
+        # Performance tracking
+        self.cycle_count = 0
+        self.last_training = datetime.now()
+        self.start_time = datetime.now()
+        
+        # Active symbols (most volatile)
+        self.active_symbols = UltimateConfig.SYMBOLS
+        
+        logger.info("="*70)
+        logger.info("🚀 ULTIMATE DEEP LEARNING SCALPING BOT")
+        logger.info("="*70)
+        logger.info(f"💰 Capital: ${UltimateConfig.INITIAL_CAPITAL}")
+        logger.info(f"🎯 Hourly Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f}")
+        logger.info(f"📈 Daily Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f}")
+        logger.info(f"📊 Monitoring {len(self.active_symbols)} Cryptocurrencies")
+        logger.info(f"⚡ Timeframe: {UltimateConfig.PRIMARY_TIMEFRAME}")
+        logger.info(f"🎯 Base Take Profit: {UltimateConfig.BASE_TAKE_PROFIT:.3%}")
+        logger.info(f"🛑 Base Stop Loss: {UltimateConfig.BASE_STOP_LOSS:.3%}")
+        logger.info("="*70)
+    
+    async def run(self):
+        """Main bot execution loop"""
+        logger.info("🚀 Starting Ultimate Scalping Bot...")
+        
+        try:
+            while True:
+                self.cycle_count += 1
+                
+                # Log status periodically
+                if self.cycle_count % 20 == 0:
+                    await self.log_performance()
+                
+                # Train models periodically
+                if self.cycle_count % UltimateConfig.DL_TRAIN_INTERVAL == 0:
+                    await self.train_models()
+                
+                # Scan for trading opportunities
+                opportunities = await self.scan_opportunities()
+                
+                # Execute best opportunities
+                executed = 0
+                for opportunity in opportunities[:3]:  # Max 3 trades per cycle
+                    if executed >= 2:  # Max 2 executions per cycle
+                        break
+                    
+                    if await self.execute_opportunity(opportunity):
+                        executed += 1
+                        await asyncio.sleep(1)  # Small delay between executions
+                
+                # Check hourly performance
+                await self.check_hourly_performance()
+                
+                # Sleep before next cycle
+                await asyncio.sleep(UltimateConfig.CHECK_INTERVAL)
+                
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user")
+        except Exception as e:
+            logger.error(f"Bot crashed: {e}")
+        finally:
+            await self.shutdown()
+    
+    async def scan_opportunities(self) -> List[Dict]:
+        """Scan for trading opportunities"""
+        opportunities = []
+        
+        for symbol in self.active_symbols:
+            try:
+                # Check if tradable
+                if not self.execution_engine.is_tradable(symbol):
+                    continue
+                
+                # Get data for all timeframes
+                multi_data = {}
+                for tf in UltimateConfig.TIMEFRAMES:
+                    df = self.execution_engine.exchange.fetch_ohlcv(symbol, tf, limit=UltimateConfig.DL_LOOKBACK)
+                    if df:
+                        df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df.set_index('timestamp', inplace=True)
+                        multi_data[tf] = df
+                
+                if not multi_data:
+                    continue
+                
+                # Use primary timeframe for prediction
+                primary_df = multi_data.get(UltimateConfig.PRIMARY_TIMEFRAME)
+                if primary_df is None or len(primary_df) < 50:
+                    continue
+                
+                # Analyze volatility
+                volatility_data = self.vol_analyzer.analyze_volatility(primary_df, symbol)
+                
+                # Create features for prediction
+                features_df = self.dl_predictor.create_features(primary_df.copy())
+                
+                # Prepare target (future price movement)
+                future_returns = primary_df['close'].pct_change(3).shift(-3)  # 3 periods ahead
+                target = (future_returns > 0).astype(int)  # 1 for up, 0 for down
+                
+                # Train model if needed
+                if symbol not in self.dl_predictor.models:
+                    if len(features_df) > 50:
+                        # Use last 80% for training
+                        train_size = int(len(features_df) * 0.8)
+                        train_features = features_df.iloc[:train_size]
+                        train_target = target.iloc[:train_size]
+                        self.dl_predictor.train_ensemble_model(symbol, train_features, train_target)
+                
+                # Get prediction
+                prediction = self.dl_predictor.predict_with_confidence(symbol, features_df.tail(10))
+                
+                if prediction['direction'] == 'HOLD':
+                    continue
+                
+                # Check risk management
+                can_trade, reason = self.risk_manager.can_trade(symbol)
+                if not can_trade:
+                    continue
+                
+                # Get execution parameters
+                execution_data = self.execution_engine.calculate_optimal_execution(
+                    symbol, prediction['direction'], 1.0  # Size will be calculated later
+                )
+                
+                if not execution_data:
+                    continue
+                
+                # Get trading parameters based on volatility
+                trading_params = self.vol_analyzer.get_trading_params(symbol)
+                
+                # Calculate stop loss and take profit
+                if prediction['direction'] == 'BUY':
+                    stop_loss = execution_data['optimal_price'] * (1 - trading_params['stop_loss_pct'])
+                    take_profit = execution_data['optimal_price'] * (1 + trading_params['take_profit_pct'])
+                    trailing_stop = execution_data['optimal_price'] * (1 - trading_params['trailing_stop_pct'])
+                else:
+                    stop_loss = execution_data['optimal_price'] * (1 + trading_params['stop_loss_pct'])
+                    take_profit = execution_data['optimal_price'] * (1 - trading_params['take_profit_pct'])
+                    trailing_stop = execution_data['optimal_price'] * (1 + trading_params['trailing_stop_pct'])
+                
+                # Calculate position size
+                position_data = self.risk_manager.calculate_adaptive_position(
+                    capital=self.risk_manager.capital,
+                    entry_price=execution_data['optimal_price'],
+                    stop_loss=stop_loss,
+                    confidence=prediction['confidence'],
+                    symbol=symbol,
+                    volatility_multiplier=trading_params['volatility_multiplier']
+                )
+                
+                if position_data['size'] <= 0:
+                    continue
+                
+                # Calculate expected profit after costs
+                trade_value = position_data['size'] * execution_data['optimal_price']
+                expected_profit = abs(take_profit - execution_data['optimal_price']) * position_data['size']
+                net_profit = expected_profit - position_data['total_fees']
+                
+                # Check profitability
+                if net_profit <= 0:
+                    continue
+                
+                # Calculate risk/reward
+                risk_amount = abs(execution_data['optimal_price'] - stop_loss) * position_data['size']
+                reward_amount = abs(take_profit - execution_data['optimal_price']) * position_data['size']
+                risk_reward = reward_amount / risk_amount if risk_amount > 0 else 0
+                
+                if risk_reward < 1.3:  # Minimum 1.3:1
+                    continue
+                
+                # Create opportunity
+                opportunity = {
+                    'symbol': symbol,
+                    'direction': prediction['direction'],
+                    'entry_price': execution_data['optimal_price'],
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'trailing_stop': trailing_stop,
+                    'size': position_data['size'],
+                    'confidence': prediction['confidence'],
+                    'model_agreement': prediction.get('model_agreement', 0),
+                    'reason': prediction['reason'],
+                    'risk_amount': position_data['risk_amount'],
+                    'expected_profit': net_profit,
+                    'risk_reward': risk_reward,
+                    'fees': position_data['total_fees'],
+                    'spread_pct': execution_data['spread_pct'],
+                    'volatility_regime': trading_params['volatility_regime'],
+                    'volatility_multiplier': trading_params['volatility_multiplier'],
+                    'is_peak_hour': trading_params['is_peak_hour'],
+                    'orderbook_imbalance': execution_data['orderbook_imbalance'],
+                    'trade_imbalance': execution_data['trade_imbalance'],
+                    'timestamp': datetime.now()
+                }
+                
+                opportunities.append(opportunity)
+                
+                # Store prediction history
+                self.prediction_history[symbol].append({
+                    'timestamp': datetime.now(),
+                    'direction': prediction['direction'],
+                    'confidence': prediction['confidence'],
+                    'actual': None  # Will be updated when trade closes
+                })
+                
+            except Exception as e:
+                logger.error(f"Error scanning {symbol}: {e}")
+        
+        # Sort by confidence and risk/reward
+        opportunities.sort(key=lambda x: (x['confidence'], x['risk_reward']), reverse=True)
+        
+        return opportunities
+    
+    async def execute_opportunity(self, opportunity: Dict) -> bool:
+        """Execute a trading opportunity"""
+        try:
+            symbol = opportunity['symbol']
+            direction = opportunity['direction']
+            
+            # Log trade execution
+            extra = {'trade_type': 'trade'}
+            logger.log(21, f"🎯 EXECUTING: {direction} {symbol}", extra=extra)
+            logger.log(21, f"   Entry: ${opportunity['entry_price']:.4f}", extra=extra)
+            logger.log(21, f"   Stop: ${opportunity['stop_loss']:.4f} ({opportunity['stop_loss']/opportunity['entry_price']-1:+.3%})", extra=extra)
+            logger.log(21, f"   Target: ${opportunity['take_profit']:.4f} ({opportunity['take_profit']/opportunity['entry_price']-1:+.3%})", extra=extra)
+            logger.log(21, f"   Size: {opportunity['size']:.6f}", extra=extra)
+            logger.log(21, f"   Confidence: {opportunity['confidence']:.1%}", extra=extra)
+            logger.log(21, f"   Risk/Reward: {opportunity['risk_reward']:.2f}:1", extra=extra)
+            logger.log(21, f"   Volatility: {opportunity['volatility_regime']}", extra=extra)
+            
+            # Create trade record
+            trade = {
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': opportunity['entry_price'],
+                'stop_loss': opportunity['stop_loss'],
+                'take_profit': opportunity['take_profit'],
+                'trailing_stop': opportunity['trailing_stop'],
+                'size': opportunity['size'],
+                'entry_time': datetime.now(),
+                'status': 'open',
+                'confidence': opportunity['confidence'],
+                'reason': opportunity['reason'],
+                'fees_paid': opportunity['fees'] / 2,
+                'risk_amount': opportunity['risk_amount'],
+                'volatility_regime': opportunity['volatility_regime'],
+                'prediction_data': {
+                    'model_agreement': opportunity['model_agreement'],
+                    'orderbook_imbalance': opportunity['orderbook_imbalance'],
+                    'trade_imbalance': opportunity['trade_imbalance']
+                }
+            }
+            
+            # Update capital (simulate fees)
+            trade_value = opportunity['size'] * opportunity['entry_price']
+            self.risk_manager.capital -= trade_value + (opportunity['fees'] / 2)
+            
+            # Add to open trades
+            self.risk_manager.open_trades.append(trade)
+            
+            # Start monitoring
+            asyncio.create_task(self.monitor_trade(trade))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error executing trade: {e}")
+            return False
+    
+    async def monitor_trade(self, trade: Dict):
+        """Monitor and manage open trade"""
+        try:
+            symbol = trade['symbol']
+            start_time = trade['entry_time']
+            best_price = trade['entry_price']
+            
+            while trade['status'] == 'open':
+                # Check max duration
+                duration = (datetime.now() - start_time).total_seconds()
+                if duration > UltimateConfig.MAX_TRADE_DURATION:
+                    await self.close_trade(trade, 'timeout')
+                    break
+                
+                # Check min duration
+                if duration < UltimateConfig.MIN_TRADE_DURATION:
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # Get current market data
+                market_data = self.execution_engine.get_market_intelligence(symbol)
+                if not market_data:
+                    await asyncio.sleep(1)
+                    continue
+                
+                current_price = market_data['last']
+                
+                # Update best price for trailing stop
+                if trade['direction'] == 'BUY':
+                    best_price = max(best_price, current_price)
+                    new_trailing_stop = best_price * (1 - UltimateConfig.TRAILING_STOP)
+                    trade['trailing_stop'] = max(trade['trailing_stop'], new_trailing_stop)
+                else:
+                    best_price = min(best_price, current_price)
+                    new_trailing_stop = best_price * (1 + UltimateConfig.TRAILING_STOP)
+                    trade['trailing_stop'] = min(trade['trailing_stop'], new_trailing_stop)
+                
+                # Check exit conditions
+                exit_price = None
+                exit_reason = None
+                
+                if trade['direction'] == 'BUY':
+                    if current_price >= trade['take_profit']:
+                        exit_price = trade['take_profit']
+                        exit_reason = 'take_profit'
+                    elif current_price <= trade['stop_loss']:
+                        exit_price = trade['stop_loss']
+                        exit_reason = 'stop_loss'
+                    elif current_price <= trade['trailing_stop']:
+                        exit_price = trade['trailing_stop']
+                        exit_reason = 'trailing_stop'
+                else:
+                    if current_price <= trade['take_profit']:
+                        exit_price = trade['take_profit']
+                        exit_reason = 'take_profit'
+                    elif current_price >= trade['stop_loss']:
+                        exit_price = trade['stop_loss']
+                        exit_reason = 'stop_loss'
+                    elif current_price >= trade['trailing_stop']:
+                        exit_price = trade['trailing_stop']
+                        exit_reason = 'trailing_stop'
+                
+                # Exit if condition met
+                if exit_price and exit_reason:
+                    await self.close_trade(trade, exit_reason, exit_price)
+                    break
+                
+                await asyncio.sleep(0.5)
+                
+        except Exception as e:
+            logger.error(f"Error monitoring trade {trade['symbol']}: {e}")
+    
+    async def close_trade(self, trade: Dict, reason: str, exit_price: Optional[float] = None):
+        """Close trade and calculate P&L"""
+        try:
+            symbol = trade['symbol']
+            
+            # Get current price if not provided
+            if exit_price is None:
+                market_data = self.execution_engine.get_market_intelligence(symbol)
+                exit_price = market_data['last'] if market_data else trade['entry_price']
+            
+            # Calculate P&L
+            if trade['direction'] == 'BUY':
+                pnl = (exit_price - trade['entry_price']) * trade['size']
+            else:
+                pnl = (trade['entry_price'] - exit_price) * trade['size']
+            
+            # Deduct fees
+            total_fees = trade['fees_paid'] * 2
+            net_pnl = pnl - total_fees
+            
+            # Update capital
+            self.risk_manager.capital += trade['size'] * exit_price - trade['fees_paid']
+            
+            # Update performance
+            self.risk_manager.update_performance(net_pnl)
+            
+            # Remove from open trades
+            self.risk_manager.open_trades = [
+                t for t in self.risk_manager.open_trades 
+                if not (t['symbol'] == trade['symbol'] and t['entry_time'] == trade['entry_time'])
+            ]
+            
+            # Update trade record
+            trade.update({
+                'exit_price': exit_price,
+                'exit_time': datetime.now(),
+                'status': 'closed',
+                'exit_reason': reason,
+                'pnl': net_pnl,
+                'pnl_pct': (net_pnl / (trade['entry_price'] * trade['size'])) * 100,
+                'duration': (datetime.now() - trade['entry_time']).total_seconds()
+            })
+            
+            # Add to history
+            self.risk_manager.trade_history.append(trade)
+            
+            # Update prediction accuracy
+            self.update_prediction_accuracy(symbol, trade)
+            
+            # Log result
+            if net_pnl > 0:
+                extra = {'trade_type': 'profit'}
+                logger.log(22, f"💰 PROFIT: {trade['direction']} {symbol}", extra=extra)
+            else:
+                extra = {'trade_type': 'loss'}
+                logger.log(23, f"📉 LOSS: {trade['direction']} {symbol}", extra=extra)
+            
+            logger.log(21, f"   Entry: ${trade['entry_price']:.4f} | Exit: ${exit_price:.4f}", extra=extra)
+            logger.log(21, f"   P&L: ${net_pnl:+.4f} ({trade['pnl_pct']:+.2f}%)", extra=extra)
+            logger.log(21, f"   Reason: {reason} | Duration: {trade['duration']:.1f}s", extra=extra)
+            logger.log(21, f"   Win Rate: {self.risk_manager.win_rate:.1%} | Capital: ${self.risk_manager.capital:.2f}", extra=extra)
+            
+        except Exception as e:
+            logger.error(f"Error closing trade: {e}")
+    
+    def update_prediction_accuracy(self, symbol: str, trade: Dict):
+        """Update prediction accuracy tracking"""
+        # Find matching prediction
+        for pred in reversed(self.prediction_history.get(symbol, [])):
+            if pred['actual'] is None:
+                # Check if prediction was correct
+                if (trade['direction'] == 'BUY' and trade['pnl'] > 0) or \
+                   (trade['direction'] == 'SELL' and trade['pnl'] > 0):
+                    pred['actual'] = 'correct'
+                else:
+                    pred['actual'] = 'incorrect'
+                break
+    
+    async def train_models(self):
+        """Periodically retrain models"""
+        logger.info("🔄 Retraining deep learning models...")
+        self.last_training = datetime.now()
+    
+    async def check_hourly_performance(self):
+        """Check and log hourly performance"""
+        current_time = datetime.now()
+        hour_passed = (current_time - self.risk_manager.hourly_start).total_seconds() >= 3600
+        
+        if hour_passed:
+            hourly_summary = f"""
+⏰ HOURLY SUMMARY
+{'='*40}
+💰 Capital: ${self.risk_manager.capital:.2f}
+📈 Hourly P&L: ${self.risk_manager.hourly_pnl:+.2f}
+🎯 Target: ${self.risk_manager.hourly_target:.2f}
+📊 Trades: {self.risk_manager.hourly_trades}
+📈 Win Rate: {self.risk_manager.win_rate:.1%}
+{'='*40}
+            """
+            logger.info(hourly_summary)
+            
+            # Reset hourly counters
+            self.risk_manager.hourly_pnl = 0
+            self.risk_manager.hourly_start = current_time
+            self.risk_manager.hourly_trades = 0
+    
+    async def log_performance(self):
+        """Log current performance"""
+        performance = f"""
+📊 PERFORMANCE UPDATE - Cycle {self.cycle_count}
+{'='*50}
+💰 Capital: ${self.risk_manager.capital:.2f} (${self.risk_manager.total_pnl:+.2f})
+📈 Total Trades: {self.risk_manager.total_trades}
+🎯 Win Rate: {self.risk_manager.win_rate:.1%} ({self.risk_manager.winning_trades}/{self.risk_manager.total_trades})
+📊 Avg Trade: ${self.risk_manager.avg_trade_pnl:+.4f}
+⚡ Open Trades: {len(self.risk_manager.open_trades)}
+🔄 Win Streak: {self.risk_manager.consecutive_wins}
+📉 Loss Streak: {self.risk_manager.consecutive_losses}
+⏰ Daily P&L: ${self.risk_manager.daily_pnl:+.2f}
+🎯 Hourly P&L: ${self.risk_manager.hourly_pnl:+.2f}
+{'='*50}
+        """
+        logger.info(performance)
+    
+    async def shutdown(self):
+        """Shutdown bot gracefully"""
+        logger.info("🛑 Shutting down Ultimate Scalping Bot...")
+        
+        # Close all open trades
+        for trade in self.risk_manager.open_trades[:]:
+            if trade['status'] == 'open':
+                await self.close_trade(trade, 'shutdown')
+        
+        # Final statistics
+        uptime = datetime.now() - self.start_time
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        final_stats = f"""
+{'='*70}
+🏁 BOT SHUTDOWN COMPLETE
+{'='*70}
+⏱️  Total Runtime: {hours}h {minutes}m {seconds}s
+🔄 Total Cycles: {self.cycle_count}
+💰 Final Capital: ${self.risk_manager.capital:.2f}
+📈 Total P&L: ${self.risk_manager.total_pnl:+.2f} ({self.risk_manager.total_pnl/UltimateConfig.INITIAL_CAPITAL*100:+.2f}%)
+🎯 Total Trades: {self.risk_manager.total_trades}
+📊 Win Rate: {self.risk_manager.win_rate:.1%}
+⚡ Trades/Hour: {self.risk_manager.total_trades / max(uptime.total_seconds()/3600, 0.1):.1f}
+📅 Daily P&L: ${self.risk_manager.daily_pnl:+.2f}
+{'='*70}
+        """
+        
+        logger.info(final_stats)
 
-class UltimateScalpingBot: """Ultimate scalping bot with deep learning""" def __init__(self): # Core components self.dl_predictor = DeepLearningPredictor() self.vol_analyzer = VolatilityAnalyzer() self.execution_engine = AdvancedExecutionEngine() self.risk_manager = AIRiskManager(UltimateConfig.INITIAL_CAPITAL) # Data storage self.symbol_data = {} self.prediction_history = defaultdict(list) # Performance tracking self.cycle_count = 0 self.last_training = datetime.now() self.start_time = datetime.now() # Active symbols (most volatile) self.active_symbols = UltimateConfig.SYMBOLS logger.info("="*70) logger.info("🚀 ULTIMATE DEEP LEARNING SCALPING BOT") logger.info("="*70) logger.info(f"💰 Capital: ${UltimateConfig.INITIAL_CAPITAL}") logger.info(f"🎯 Hourly Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f}") logger.info(f"📈 Daily Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f}") logger.info(f"📊 Monitoring {len(self.active_symbols)} Cryptocurrencies") logger.info(f"⚡ Timeframe: {UltimateConfig.PRIMARY_TIMEFRAME}") logger.info(f"🎯 Base Take Profit: {UltimateConfig.BASE_TAKE_PROFIT:.3%}") logger.info(f"🛑 Base Stop Loss: {UltimateConfig.BASE_STOP_LOSS:.3%}") logger.info("="*70) async def run(self): """Main bot execution loop""" logger.info("🚀 Starting Ultimate Scalping Bot...") try: while True: self.cycle_count += 1 # Log status periodically if self.cycle_count % 20 == 0: await self.log_performance() # Train models periodically if self.cycle_count % UltimateConfig.DL_TRAIN_INTERVAL == 0: await self.train_models() # Scan for trading opportunities opportunities = await self.scan_opportunities() # Execute best opportunities executed = 0 for opportunity in opportunities[:3]: # Max 3 trades per cycle if executed >= 2: # Max 2 executions per cycle break if await self.execute_opportunity(opportunity): executed += 1 await asyncio.sleep(1) # Small delay between executions # Check hourly performance await self.check_hourly_performance() # Sleep before next cycle await asyncio.sleep(UltimateConfig.CHECK_INTERVAL) except KeyboardInterrupt: logger.info("Bot stopped by user") except Exception as e: logger.error(f"Bot crashed: {e}") finally: await self.shutdown() async def scan_opportunities(self) -> List[Dict]: """Scan for trading opportunities""" opportunities = [] for symbol in self.active_symbols: try: # Check if tradable if not self.execution_engine.is_tradable(symbol): continue # Get data for all timeframes multi_data = {} for tf in UltimateConfig.TIMEFRAMES: df = self.execution_engine.exchange.fetch_ohlcv(symbol, tf, limit=UltimateConfig.DL_LOOKBACK) if df: df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']) df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms') df.set_index('timestamp', inplace=True) multi_data[tf] = df if not multi_data: continue # Use primary timeframe for prediction primary_df = multi_data.get(UltimateConfig.PRIMARY_TIMEFRAME) if primary_df is None or len(primary_df) < 50: continue # Analyze volatility volatility_data = self.vol_analyzer.analyze_volatility(primary_df, symbol) # Create features for prediction features_df = self.dl_predictor.create_features(primary_df.copy()) # Prepare target (future price movement) future_returns = primary_df['close'].pct_change(3).shift(-3) # 3 periods ahead target = (future_returns > 0).astype(int) # 1 for up, 0 for down # Train model if needed if symbol not in self.dl_predictor.models: if len(features_df) > 50: # Use last 80% for training train_size = int(len(features_df) * 0.8) train_features = features_df.iloc[:train_size] train_target = target.iloc[:train_size] self.dl_predictor.train_ensemble_model(symbol, train_features, train_target) # Get prediction prediction = self.dl_predictor.predict_with_confidence(symbol, features_df.tail(10)) if prediction['direction'] == 'HOLD': continue # Check risk management can_trade, reason = self.risk_manager.can_trade(symbol) if not can_trade: continue # Get execution parameters execution_data = self.execution_engine.calculate_optimal_execution( symbol, prediction['direction'], 1.0 # Size will be calculated later ) if not execution_data: continue # Get trading parameters based on volatility trading_params = self.vol_analyzer.get_trading_params(symbol) # Calculate stop loss and take profit if prediction['direction'] == 'BUY': stop_loss = execution_data['optimal_price'] * (1 - trading_params['stop_loss_pct']) take_profit = execution_data['optimal_price'] * (1 + trading_params['take_profit_pct']) trailing_stop = execution_data['optimal_price'] * (1 - trading_params['trailing_stop_pct']) else: stop_loss = execution_data['optimal_price'] * (1 + trading_params['stop_loss_pct']) take_profit = execution_data['optimal_price'] * (1 - trading_params['take_profit_pct']) trailing_stop = execution_data['optimal_price'] * (1 + trading_params['trailing_stop_pct']) # Calculate position size position_data = self.risk_manager.calculate_adaptive_position( capital=self.risk_manager.capital, entry_price=execution_data['optimal_price'], stop_loss=stop_loss, confidence=prediction['confidence'], symbol=symbol, volatility_multiplier=trading_params['volatility_multiplier'] ) if position_data['size'] <= 0: continue # Calculate expected profit after costs trade_value = position_data['size'] * execution_data['optimal_price'] expected_profit = abs(take_profit - execution_data['optimal_price']) * position_data['size'] net_profit = expected_profit - position_data['total_fees'] # Check profitability if net_profit <= 0: continue # Calculate risk/reward risk_amount = abs(execution_data['optimal_price'] - stop_loss) * position_data['size'] reward_amount = abs(take_profit - execution_data['optimal_price']) * position_data['size'] risk_reward = reward_amount / risk_amount if risk_amount > 0 else 0 if risk_reward < 1.3: # Minimum 1.3:1 continue # Create opportunity opportunity = { 'symbol': symbol, 'direction': prediction['direction'], 'entry_price': execution_data['optimal_price'], 'stop_loss': stop_loss, 'take_profit': take_profit, 'trailing_stop': trailing_stop, 'size': position_data['size'], 'confidence': prediction['confidence'], 'model_agreement': prediction.get('model_agreement', 0), 'reason': prediction['reason'], 'risk_amount': position_data['risk_amount'], 'expected_profit': net_profit, 'risk_reward': risk_reward, 'fees': position_data['total_fees'], 'spread_pct': execution_data['spread_pct'], 'volatility_regime': trading_params['volatility_regime'], 'volatility_multiplier': trading_params['volatility_multiplier'], 'is_peak_hour': trading_params['is_peak_hour'], 'orderbook_imbalance': execution_data['orderbook_imbalance'], 'trade_imbalance': execution_data['trade_imbalance'], 'timestamp': datetime.now() } opportunities.append(opportunity) # Store prediction history self.prediction_history[symbol].append({ 'timestamp': datetime.now(), 'direction': prediction['direction'], 'confidence': prediction['confidence'], 'actual': None # Will be updated when trade closes }) except Exception as e: logger.error(f"Error scanning {symbol}: {e}") # Sort by confidence and risk/reward opportunities.sort(key=lambda x: (x['confidence'], x['risk_reward']), reverse=True) return opportunities async def execute_opportunity(self, opportunity: Dict) -> bool: """Execute a trading opportunity""" try: symbol = opportunity['symbol'] direction = opportunity['direction'] # Log trade execution extra = {'trade_type': 'trade'} logger.log(21, f"🎯 EXECUTING: {direction} {symbol}", extra=extra) logger.log(21, f" Entry: ${opportunity['entry_price']:.4f}", extra=extra) logger.log(21, f" Stop: ${opportunity['stop_loss']:.4f} ({opportunity['stop_loss']/opportunity['entry_price']-1:+.3%})", extra=extra) logger.log(21, f" Target: ${opportunity['take_profit']:.4f} ({opportunity['take_profit']/opportunity['entry_price']-1:+.3%})", extra=extra) logger.log(21, f" Size: {opportunity['size']:.6f}", extra=extra) logger.log(21, f" Confidence: {opportunity['confidence']:.1%}", extra=extra) logger.log(21, f" Risk/Reward: {opportunity['risk_reward']:.2f}:1", extra=extra) logger.log(21, f" Volatility: {opportunity['volatility_regime']}", extra=extra) # Create trade record trade = { 'symbol': symbol, 'direction': direction, 'entry_price': opportunity['entry_price'], 'stop_loss': opportunity['stop_loss'], 'take_profit': opportunity['take_profit'], 'trailing_stop': opportunity['trailing_stop'], 'size': opportunity['size'], 'entry_time': datetime.now(), 'status': 'open', 'confidence': opportunity['confidence'], 'reason': opportunity['reason'], 'fees_paid': opportunity['fees'] / 2, 'risk_amount': opportunity['risk_amount'], 'volatility_regime': opportunity['volatility_regime'], 'prediction_data': { 'model_agreement': opportunity['model_agreement'], 'orderbook_imbalance': opportunity['orderbook_imbalance'], 'trade_imbalance': opportunity['trade_imbalance'] } } # Update capital (simulate fees) trade_value = opportunity['size'] * opportunity['entry_price'] self.risk_manager.capital -= trade_value + (opportunity['fees'] / 2) # Add to open trades self.risk_manager.open_trades.append(trade) # Start monitoring asyncio.create_task(self.monitor_trade(trade)) return True except Exception as e: logger.error(f"Error executing trade: {e}") return False async def monitor_trade(self, trade: Dict): """Monitor and manage open trade""" try: symbol = trade['symbol'] start_time = trade['entry_time'] best_price = trade['entry_price'] while trade['status'] == 'open': # Check max duration duration = (datetime.now() - start_time).total_seconds() if duration > UltimateConfig.MAX_TRADE_DURATION: await self.close_trade(trade, 'timeout') break # Check min duration if duration < UltimateConfig.MIN_TRADE_DURATION: await asyncio.sleep(0.5) continue # Get current market data market_data = self.execution_engine.get_market_intelligence(symbol) if not market_data: await asyncio.sleep(1) continue current_price = market_data['last'] # Update best price for trailing stop if trade['direction'] == 'BUY': best_price = max(best_price, current_price) new_trailing_stop = best_price * (1 - UltimateConfig.TRAILING_STOP) trade['trailing_stop'] = max(trade['trailing_stop'], new_trailing_stop) else: best_price = min(best_price, current_price) new_trailing_stop = best_price * (1 + UltimateConfig.TRAILING_STOP) trade['trailing_stop'] = min(trade['trailing_stop'], new_trailing_stop) # Check exit conditions exit_price = None exit_reason = None if trade['direction'] == 'BUY': if current_price >= trade['take_profit']: exit_price = trade['take_profit'] exit_reason = 'take_profit' elif current_price <= trade['stop_loss']: exit_price = trade['stop_loss'] exit_reason = 'stop_loss' elif current_price <= trade['trailing_stop']: exit_price = trade['trailing_stop'] exit_reason = 'trailing_stop' else: if current_price <= trade['take_profit']: exit_price = trade['take_profit'] exit_reason = 'take_profit' elif current_price >= trade['stop_loss']: exit_price = trade['stop_loss'] exit_reason = 'stop_loss' elif current_price >= trade['trailing_stop']: exit_price = trade['trailing_stop'] exit_reason = 'trailing_stop' # Exit if condition met if exit_price and exit_reason: await self.close_trade(trade, exit_reason, exit_price) break await asyncio.sleep(0.5) except Exception as e: logger.error(f"Error monitoring trade {trade['symbol']}: {e}") async def close_trade(self, trade: Dict, reason: str, exit_price: Optional[float] = None): """Close trade and calculate P&L""" try: symbol = trade['symbol'] # Get current price if not provided if exit_price is None: market_data = self.execution_engine.get_market_intelligence(symbol) exit_price = market_data['last'] if market_data else trade['entry_price'] # Calculate P&L if trade['direction'] == 'BUY': pnl = (exit_price - trade['entry_price']) * trade['size'] else: pnl = (trade['entry_price'] - exit_price) * trade['size'] # Deduct fees total_fees = trade['fees_paid'] * 2 net_pnl = pnl - total_fees # Update capital self.risk_manager.capital += trade['size'] * exit_price - trade['fees_paid'] # Update performance self.risk_manager.update_performance(net_pnl) # Remove from open trades self.risk_manager.open_trades = [ t for t in self.risk_manager.open_trades if not (t['symbol'] == trade['symbol'] and t['entry_time'] == trade['entry_time']) ] # Update trade record trade.update({ 'exit_price': exit_price, 'exit_time': datetime.now(), 'status': 'closed', 'exit_reason': reason, 'pnl': net_pnl, 'pnl_pct': (net_pnl / (trade['entry_price'] * trade['size'])) * 100, 'duration': (datetime.now() - trade['entry_time']).total_seconds() }) # Add to history self.risk_manager.trade_history.append(trade) # Update prediction accuracy self.update_prediction_accuracy(symbol, trade) # Log result if net_pnl > 0: extra = {'trade_type': 'profit'} logger.log(22, f"💰 PROFIT: {trade['direction']} {symbol}", extra=extra) else: extra = {'trade_type': 'loss'} logger.log(23, f"📉 LOSS: {trade['direction']} {symbol}", extra=extra) logger.log(21, f" Entry: ${trade['entry_price']:.4f} | Exit: ${exit_price:.4f}", extra=extra) logger.log(21, f" P&L: ${net_pnl:+.4f} ({trade['pnl_pct']:+.2f}%)", extra=extra) logger.log(21, f" Reason: {reason} | Duration: {trade['duration']:.1f}s", extra=extra) logger.log(21, f" Win Rate: {self.risk_manager.win_rate:.1%} | Capital: ${self.risk_manager.capital:.2f}", extra=extra) except Exception as e: logger.error(f"Error closing trade: {e}") def update_prediction_accuracy(self, symbol: str, trade: Dict): """Update prediction accuracy tracking""" # Find matching prediction for pred in reversed(self.prediction_history.get(symbol, [])): if pred['actual'] is None: # Check if prediction was correct if (trade['direction'] == 'BUY' and trade['pnl'] > 0) or \ (trade['direction'] == 'SELL' and trade['pnl'] > 0): pred['actual'] = 'correct' else: pred['actual'] = 'incorrect' break async def train_models(self): """Periodically retrain models""" logger.info("🔄 Retraining deep learning models...") self.last_training = datetime.now() async def check_hourly_performance(self): """Check and log hourly performance""" current_time = datetime.now() hour_passed = (current_time - self.risk_manager.hourly_start).total_seconds() >= 3600 if hour_passed: hourly_summary = f""" ⏰ HOURLY SUMMARY {'='*40} 💰 Capital: ${self.risk_manager.capital:.2f} 📈 Hourly P&L: ${self.risk_manager.hourly_pnl:+.2f} 🎯 Target: ${self.risk_manager.hourly_target:.2f} 📊 Trades: {self.risk_manager.hourly_trades} 📈 Win Rate: {self.risk_manager.win_rate:.1%} {'='*40} """ logger.info(hourly_summary) # Reset hourly counters self.risk_manager.hourly_pnl = 0 self.risk_manager.hourly_start = current_time self.risk_manager.hourly_trades = 0 async def log_performance(self): """Log current performance""" performance = f""" 📊 PERFORMANCE UPDATE - Cycle {self.cycle_count} {'='*50} 💰 Capital: ${self.risk_manager.capital:.2f} (${self.risk_manager.total_pnl:+.2f}) 📈 Total Trades: {self.risk_manager.total_trades} 🎯 Win Rate: {self.risk_manager.win_rate:.1%} ({self.risk_manager.winning_trades}/{self.risk_manager.total_trades}) 📊 Avg Trade: ${self.risk_manager.avg_trade_pnl:+.4f} ⚡ Open Trades: {len(self.risk_manager.open_trades)} 🔄 Win Streak: {self.risk_manager.consecutive_wins} 📉 Loss Streak: {self.risk_manager.consecutive_losses} ⏰ Daily P&L: ${self.risk_manager.daily_pnl:+.2f} 🎯 Hourly P&L: ${self.risk_manager.hourly_pnl:+.2f} {'='*50} """ logger.info(performance) async def shutdown(self): """Shutdown bot gracefully""" logger.info("🛑 Shutting down Ultimate Scalping Bot...") # Close all open trades for trade in self.risk_manager.open_trades[:]: if trade['status'] == 'open': await self.close_trade(trade, 'shutdown') # Final statistics uptime = datetime.now() - self.start_time hours, remainder = divmod(uptime.seconds, 3600) minutes, seconds = divmod(remainder, 60) final_stats = f""" {'='*70} 🏁 BOT SHUTDOWN COMPLETE {'='*70} ⏱️ Total Runtime: {hours}h {minutes}m {seconds}s 🔄 Total Cycles: {self.cycle_count} 💰 Final Capital: ${self.risk_manager.capital:.2f} 📈 Total P&L: ${self.risk_manager.total_pnl:+.2f} ({self.risk_manager.total_pnl/UltimateConfig.INITIAL_CAPITAL*100:+.2f}%) 🎯 Total Trades: {self.risk_manager.total_trades} 📊 Win Rate: {self.risk_manager.win_rate:.1%} ⚡ Trades/Hour: {self.risk_manager.total_trades / max(uptime.total_seconds()/3600, 0.1):.1f} 📅 Daily P&L: ${self.risk_manager.daily_pnl:+.2f} {'='*70} """ logger.info(final_stats)
+# ============================================================================
+# TELEGRAM NOTIFICATIONS
+# ============================================================================
 
-# ============================================================================ # TELEGRAM NOTIFICATIONS # ============================================================================
+class TelegramNotifier:
+    """Telegram notifications for important events"""
+    
+    def __init__(self):
+        self.token = UltimateConfig.TELEGRAM_BOT_TOKEN
+        self.chat_id = UltimateConfig.TELEGRAM_CHAT_ID
+        
+        # التحقق الصحيح من Chat ID
+        self.enabled = UltimateConfig.TELEGRAM_ENABLED and self.token and self.chat_id
+        
+        if self.enabled:
+            # التحقق من أن Chat ID ليس ID بوت
+            try:
+                # استخرج البوت ID من التوكن
+                bot_id_from_token = str(self.token).split(':')[0].strip() if ':' in str(self.token) else ''
+                chat_id_str = str(self.chat_id).strip()
+                
+                if bot_id_from_token and chat_id_str == bot_id_from_token:
+                    self.enabled = False
+                    logger.warning("Telegram disabled: Chat ID appears to be a bot ID")
+                else:
+                    logger.info("Telegram Notifier initialized")
+            except:
+                logger.info("Telegram Notifier initialized")
+        else:
+            logger.info("Telegram Notifier disabled")
+    
+    async def send_message(self, message: str):
+        """Send Telegram message"""
+        if not self.enabled:
+            return
+        
+        try:
+            import aiohttp
+            
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            data = {
+                'chat_id': self.chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=data) as response:
+                    if response.status == 200:
+                        logger.debug("Telegram message sent")
+                    else:
+                        logger.error(f"Telegram error: {await response.text()}")
+                        
+        except ImportError:
+            logger.warning("aiohttp not installed, Telegram disabled")
+            self.enabled = False
+        except Exception as e:
+            logger.error(f"Error sending Telegram message: {e}")
 
-class TelegramNotifier: """Telegram notifications for important events""" def __init__(self): self.token = UltimateConfig.TELEGRAM_BOT_TOKEN self.chat_id = UltimateConfig.TELEGRAM_CHAT_ID # التحقق الصحيح من Chat ID self.enabled = UltimateConfig.TELEGRAM_ENABLED and self.token and self.chat_id if self.enabled: # التحقق من أن Chat ID ليس ID بوت try: # استخرج البوت ID من التوكن bot_id_from_token = str(self.token).split(':')[0].strip() if ':' in str(self.token) else '' chat_id_str = str(self.chat_id).strip() if bot_id_from_token and chat_id_str == bot_id_from_token: self.enabled = False logger.warning("Telegram disabled: Chat ID appears to be a bot ID") else: logger.info("Telegram Notifier initialized") except: logger.info("Telegram Notifier initialized") else: logger.info("Telegram Notifier disabled") async def send_message(self, message: str): """Send Telegram message""" if not self.enabled: return try: import aiohttp url = f"https://api.telegram.org/bot{self.token}/sendMessage" data = { 'chat_id': self.chat_id, 'text': message, 'parse_mode': 'HTML' } async with aiohttp.ClientSession() as session: async with session.post(url, json=data) as response: if response.status == 200: logger.debug("Telegram message sent") else: logger.error(f"Telegram error: {await response.text()}") except ImportError: logger.warning("aiohttp not installed, Telegram disabled") self.enabled = False except Exception as e: logger.error(f"Error sending Telegram message: {e}")
+# ============================================================================
+# HEALTH CHECK SERVER
+# ============================================================================
 
-# ============================================================================ # HEALTH CHECK SERVER # ============================================================================
+async def start_health_server():
+    """Start health check server"""
+    try:
+        from aiohttp import web
+        
+        app = web.Application()
+        
+        async def health_handler(request):
+            return web.Response(text='OK', status=200)
+        
+        async def stats_handler(request):
+            stats = {
+                'status': 'running',
+                'timestamp': datetime.now().isoformat(),
+                'service': 'ultimate-scalping-bot',
+                'version': '3.0',
+                'features': 'deep-learning,20-cryptos,1m-scalping'
+            }
+            return web.json_response(stats)
+        
+        app.router.add_get('/health', health_handler)
+        app.router.add_get('/stats', stats_handler)
+        app.router.add_get('/', health_handler)
+        
+        port = int(os.getenv('PORT', 8080))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        
+        logger.info(f"Health server started on port {port}")
+        return runner
+        
+    except ImportError:
+        logger.warning("aiohttp not available, health server disabled")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to start health server: {e}")
+        return None
 
-async def start_health_server(): """Start health check server""" try: from aiohttp import web app = web.Application() async def health_handler(request): return web.Response(text='OK', status=200) async def stats_handler(request): stats = { 'status': 'running', 'timestamp': datetime.now().isoformat(), 'service': 'ultimate-scalping-bot', 'version': '3.0', 'features': 'deep-learning,20-cryptos,1m-scalping' } return web.json_response(stats) app.router.add_get('/health', health_handler) app.router.add_get('/stats', stats_handler) app.router.add_get('/', health_handler) port = int(os.getenv('PORT', 8080)) runner = web.AppRunner(app) await runner.setup() site = web.TCPSite(runner, '0.0.0.0', port) await site.start() logger.info(f"Health server started on port {port}") return runner except ImportError: logger.warning("aiohttp not available, health server disabled") return None except Exception as e: logger.error(f"Failed to start health server: {e}") return None
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 
-# ============================================================================ # MAIN EXECUTION # ============================================================================
+async def main():
+    """Main entry point"""
+    print("\n" + "="*70)
+    print("🚀 ULTIMATE DEEP LEARNING SCALPING BOT")
+    print("="*70)
+    print(f"💰 Starting Capital: ${UltimateConfig.INITIAL_CAPITAL}")
+    print(f"🎯 Hourly Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f}")
+    print(f"📈 Daily Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f}")
+    print(f"📊 Monitoring {len(UltimateConfig.SYMBOLS)} Cryptocurrencies")
+    print(f"⚡ Timeframe: {UltimateConfig.PRIMARY_TIMEFRAME}")
+    print(f"🧠 Using Deep Learning & Ensemble Models")
+    print(f"📈 Multi-Timeframe Analysis: {', '.join(UltimateConfig.TIMEFRAMES)}")
+    print("="*70)
+    print()
+    
+    # Check dependencies
+    try:
+        import ccxt
+        import pandas
+        import numpy
+        import xgboost
+        from sklearn.ensemble import RandomForestClassifier
+        print("✅ Core dependencies OK")
+    except ImportError as e:
+        print(f"❌ Missing dependency: {e}")
+        print("Run: pip install ccxt pandas numpy xgboost scikit-learn")
+        return
+    
+    # Start health server
+    health_server = await start_health_server()
+    
+    # Initialize Telegram
+    telegram = TelegramNotifier()
+    
+    # Send startup message
+    if telegram.enabled:
+        startup_msg = f"""
+🚀 <b>ULTIMATE SCALPING BOT STARTED</b>
 
-async def main(): """Main entry point""" print("\n" + "="*70) print("🚀 ULTIMATE DEEP LEARNING SCALPING BOT") print("="*70) print(f"💰 Starting Capital: ${UltimateConfig.INITIAL_CAPITAL}") print(f"🎯 Hourly Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f}") print(f"📈 Daily Target: ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f}") print(f"📊 Monitoring {len(UltimateConfig.SYMBOLS)} Cryptocurrencies") print(f"⚡ Timeframe: {UltimateConfig.PRIMARY_TIMEFRAME}") print(f"🧠 Using Deep Learning & Ensemble Models") print(f"📈 Multi-Timeframe Analysis: {', '.join(UltimateConfig.TIMEFRAMES)}") print("="*70) print() # Check dependencies try: import ccxt import pandas import numpy import xgboost from sklearn.ensemble import RandomForestClassifier print("✅ Core dependencies OK") except ImportError as e: print(f"❌ Missing dependency: {e}") print("Run: pip install ccxt pandas numpy xgboost scikit-learn") return # Start health server health_server = await start_health_server() # Initialize Telegram telegram = TelegramNotifier() # Send startup message if telegram.enabled: startup_msg = f""" 🚀 <b>ULTIMATE SCALPING BOT STARTED</b>
+💰 <b>Capital:</b> ${UltimateConfig.INITIAL_CAPITAL}
+🎯 <b>Hourly Target:</b> ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f}
+📈 <b>Daily Target:</b> ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f}
+📊 <b>Cryptocurrencies:</b> {len(UltimateConfig.SYMBOLS)}
+⚡ <b>Timeframe:</b> {UltimateConfig.PRIMARY_TIMEFRAME}
 
-💰 <b>Capital:</b> ${UltimateConfig.INITIAL_CAPITAL} 🎯 <b>Hourly Target:</b> ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.HOURLY_TARGET:.2f} 📈 <b>Daily Target:</b> ${UltimateConfig.INITIAL_CAPITAL * UltimateConfig.DAILY_TARGET:.2f} 📊 <b>Cryptocurrencies:</b> {len(UltimateConfig.SYMBOLS)} ⚡ <b>Timeframe:</b> {UltimateConfig.PRIMARY_TIMEFRAME}
+🧠 <b>Features:</b>
+• Deep Learning Predictions
+• Ensemble Models (XGBoost, Random Forest, Gradient Boosting)
+• Multi-Timeframe Analysis
+• Volatility-Adaptive Trading
+• 20 Most Volatile Cryptos
+• 1-Minute Scalping Strategy
 
-🧠 <b>Features:</b> • Deep Learning Predictions • Ensemble Models (XGBoost, Random Forest, Gradient Boosting) • Multi-Timeframe Analysis • Volatility-Adaptive Trading • 20 Most Volatile Cryptos • 1-Minute Scalping Strategy
+📈 <b>Trading Parameters:</b>
+• Take Profit: {UltimateConfig.BASE_TAKE_PROFIT:.3%}
+• Stop Loss: {UltimateConfig.BASE_STOP_LOSS:.3%}
+• Min Confidence: {UltimateConfig.DL_MIN_CONFIDENCE:.0%}
 
-📈 <b>Trading Parameters:</b> • Take Profit: {UltimateConfig.BASE_TAKE_PROFIT:.3%} • Stop Loss: {UltimateConfig.BASE_STOP_LOSS:.3%} • Min Confidence: {UltimateConfig.DL_MIN_CONFIDENCE:.0%}
+Bot is now scanning for opportunities...
+        """
+        await telegram.send_message(startup_msg)
+    
+    # Create and run bot
+    bot = UltimateScalpingBot()
+    
+    try:
+        await bot.run()
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+    finally:
+        if health_server:
+            await health_server.cleanup()
+        
+        # Send shutdown message
+        if telegram.enabled:
+            uptime = datetime.now() - bot.start_time
+            hours, remainder = divmod(uptime.seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            
+            shutdown_msg = f"""
+🛑 <b>BOT SHUTDOWN</b>
 
-Bot is now scanning for opportunities... """ await telegram.send_message(startup_msg) # Create and run bot bot = UltimateScalpingBot() try: await bot.run() except KeyboardInterrupt: print("\n👋 Bot stopped by user") except Exception as e: print(f"\n❌ Error: {e}") finally: if health_server: await health_server.cleanup() # Send shutdown message if telegram.enabled: uptime = datetime.now() - bot.start_time hours, remainder = divmod(uptime.seconds, 3600) minutes, seconds = divmod(remainder, 60) shutdown_msg = f""" 🛑 <b>BOT SHUTDOWN</b>
+⏱️  <b>Runtime:</b> {hours}h {minutes}m {seconds}s
+💰 <b>Final Capital:</b> ${bot.risk_manager.capital:.2f}
+📈 <b>Total P&L:</b> ${bot.risk_manager.total_pnl:+.2f}
+🎯 <b>Total Trades:</b> {bot.risk_manager.total_trades}
+📊 <b>Win Rate:</b> {bot.risk_manager.win_rate:.1%}
+⚡ <b>Trades/Hour:</b> {bot.risk_manager.total_trades / max(uptime.total_seconds()/3600, 0.1):.1f}
 
-⏱️ <b>Runtime:</b> {hours}h {minutes}m {seconds}s 💰 <b>Final Capital:</b> ${bot.risk_manager.capital:.2f} 📈 <b>Total P&L:</b> ${bot.risk_manager.total_pnl:+.2f} 🎯 <b>Total Trades:</b> {bot.risk_manager.total_trades} 📊 <b>Win Rate:</b> {bot.risk_manager.win_rate:.1%} ⚡ <b>Trades/Hour:</b> {bot.risk_manager.total_trades / max(uptime.total_seconds()/3600, 0.1):.1f}
+Thank you for using Ultimate Scalping Bot!
+            """
+            await telegram.send_message(shutdown_msg)
 
-Thank you for using Ultimate Scalping Bot! """ await telegram.send_message(shutdown_msg)
-
-if __name__ == "__main__": # Run the bot asyncio.run(main())
+if __name__ == "__main__":
+    # Run the bot
+    asyncio.run(main())
