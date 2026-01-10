@@ -1,11 +1,10 @@
 import os
 import time
-import asyncio
 import logging
 import pandas as pd
 import numpy as np
-import aiohttp
-import ccxt.async_support as ccxt
+import requests
+import ccxt
 import warnings
 from datetime import datetime
 from typing import Dict, Optional
@@ -13,58 +12,111 @@ from typing import Dict, Optional
 warnings.filterwarnings('ignore')
 
 # ============================================================================
-# CONFIGURATION
+# RELAXED CONFIGURATION FOR MAXIMUM ACTIVITY
 # ============================================================================
 
-SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
-    'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'TRX/USDT',
-    'LINK/USDT', 'MATIC/USDT', 'NEAR/USDT', 'LTC/USDT', 'BCH/USDT',
-    'SHIB/USDT', 'UNI/USDT', 'STX/USDT', 'FIL/USDT', 'ARB/USDT'
-]
+class UltimateConfig:
+    SYMBOLS = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 
+        'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'TRX/USDT',
+        'LINK/USDT', 'MATIC/USDT', 'NEAR/USDT', 'LTC/USDT', 'BCH/USDT',
+        'SHIB/USDT', 'UNI/USDT', 'STX/USDT', 'FIL/USDT', 'ARB/USDT'
+    ]
+    
+    INITIAL_CAPITAL = 100.0
+    RISK_PER_TRADE = 0.10
+    MAX_OPEN_TRADES = 10
+    
+    BASE_TAKE_PROFIT = 0.0070
+    BASE_STOP_LOSS = 0.0050
+    BREAK_EVEN_TRIGGER = 0.0020
+    
+    TAKER_FEE = 0.0010
+    CHECK_INTERVAL = 2
+    
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-class ZScalper:
-    def __init__(self):
-        self.ex = ccxt.binance({'enableRateLimit': True})
-        self.cash = 100.0
-        self.pnl = 0.0
-        self.pos = None
-        self.last_update = 0
-        self.sess = None
-        self.tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.tg_chat = os.getenv('TELEGRAM_CHAT_ID')
-        self.last_msg_id = None
+# ============================================================================
+# TELEGRAM ALERTS
+# ============================================================================
 
-    async def tg(self, msg: str, edit: bool = False):
-        if not self.tg_token: return
-        if not self.sess: self.sess = aiohttp.ClientSession()
-        
-        url = f"https://api.telegram.org/bot{self.tg_token}/"
-        try:
-            if edit and self.last_msg_id:
-                method = "editMessageText"
-                payload = {"chat_id": self.tg_chat, "message_id": self.last_msg_id, "text": msg, "parse_mode": "HTML"}
-            else:
-                method = "sendMessage"
-                payload = {"chat_id": self.tg_chat, "text": msg, "parse_mode": "HTML"}
+def send_telegram(msg: str):
+    if not UltimateConfig.TELEGRAM_TOKEN:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{UltimateConfig.TELEGRAM_TOKEN}/sendMessage"
+        requests.post(
+            url,
+            json={
+                "chat_id": UltimateConfig.TELEGRAM_CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML"
+            },
+            timeout=5
+        )
+    except:
+        pass
+
+# ============================================================================
+# ENGINE & LOGIC
+# ============================================================================
+
+class PortfolioManager:
+    def __init__(self, initial):
+        self.balance = initial
+        self.open_trades = {}
+
+    def update_and_report(self, prices):
+        closed = []
+        for tid, t in self.open_trades.items():
+            price = prices.get(t['symbol'])
+            if not price:
+                continue
             
-            async with self.sess.post(url + method, json=payload) as resp:
-                data = await resp.json()
-                if not edit and data.get('ok'):
-                    self.last_msg_id = data['result']['message_id']
-        except Exception as e:
-            print(f"Telegram error: {e}")
+            pnl = (
+                (price - t['entry']) / t['entry']
+                if t['side'] == 'BUY'
+                else (t['entry'] - price) / t['entry']
+            )
+            pnl -= (UltimateConfig.TAKER_FEE * 2)
 
-    async def fetch(self, sym: str):
-        ohlcv = await self.ex.fetch_ohlcv(sym, '1m', limit=50)
-        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        # Technicals
-        df['rsi'] = self.rsi(df['c'])
-        df['ma'] = df['c'].rolling(20).mean()
-        df['std'] = df['c'].rolling(20).std()
-        df['zscore'] = (df['c'] - df['ma']) / df['std']
-        df['mom'] = df['c'].pct_change(3)
-        return df
+            if pnl >= UltimateConfig.BREAK_EVEN_TRIGGER and not t.get('be'):
+                t['sl'] = -0.0001
+                t['be'] = True
+                send_telegram(f"🛡️ <b>SAFE:</b> {t['symbol']} at Break-Even")
+
+            if pnl >= UltimateConfig.BASE_TAKE_PROFIT:
+                closed.append((tid, "✅ TP", pnl))
+            elif pnl <= -t['sl']:
+                closed.append((tid, "❌ SL", pnl))
+
+        for tid, reason, final_pnl in closed:
+            trade = self.open_trades.pop(tid)
+            profit = final_pnl * trade['size']
+            self.balance += (trade['size'] + profit)
+            send_telegram(
+                f"🏁 <b>CLOSED: {trade['symbol']}</b>\n"
+                f"Net: ${profit:+.2f}\n"
+                f"Balance: ${self.balance:.2f}"
+            )
+
+class FastBot:
+    def __init__(self):
+        self.exchange = ccxt.binance()
+        self.portfolio = PortfolioManager(UltimateConfig.INITIAL_CAPITAL)
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+    def get_signal(self, df):
+        ema8 = df['close'].ewm(span=8).mean().iloc[-1]
+        ema21 = df['close'].ewm(span=21).mean().iloc[-1]
+        rsi = self.rsi(df['close']).iloc[-1]
+        
+        if ema8 > ema21 and rsi < 70:
+            return 'BUY'
+        if ema8 < ema21 and rsi > 30:
+            return 'SELL'
+        return None
 
     def rsi(self, series, window=14):
         delta = series.diff()
@@ -72,87 +124,88 @@ class ZScalper:
         loss = (-delta.where(delta < 0, 0)).rolling(window).mean()
         return 100 - (100 / (1 + (gain / loss)))
 
-    async def check_entry(self):
-        for sym in SYMBOLS:
-            try:
-                df = await self.fetch(sym)
-                r = df.iloc[-1]
-                price = r['c']
-                
-                # Signal: Oversold + Momentum turning
-                score = 0
-                if r['zscore'] < -1.5: score += 4
-                if r['rsi'] < 35: score += 3
-                if r['mom'] > 0: score += 3
-
-                if score >= 7:
-                    sz = (self.cash * 0.1) / price
-                    self.pos = {
-                        'sym': sym, 'entry': price, 'sz': sz, 
-                        't': time.time(), 'tp': price * 1.008, 
-                        'sl': price * 0.995
-                    }
-                    self.cash -= (self.pos['sz'] * price)
-                    await self.tg(f"⚡ <b>BUY {sym}</b>\nPrice: ${price:.4f}\nScore: {score}/10\nZ: {r['zscore']:.2f}")
-                    return True
-            except: continue
-        return False
-
-    async def check_exit(self):
-        if not self.pos: return False
-        try:
-            tick = await self.ex.fetch_ticker(self.pos['sym'])
-            curr = tick['last']
-            pnl_pct = (curr / self.pos['entry'] - 1)
-            
-            exit_signal = False
-            reason = ""
-
-            if curr >= self.pos['tp']:
-                exit_signal, reason = True, "✅ TAKE PROFIT"
-            elif curr <= self.pos['sl']:
-                exit_signal, reason = True, "❌ STOP LOSS"
-
-            if exit_signal:
-                val = self.pos['sz'] * curr
-                profit = val - (self.pos['sz'] * self.pos['entry'])
-                self.cash += val
-                self.pnl += profit
-                await self.tg(f"🏁 <b>{reason}</b>\nProfit: ${profit:+.2f}\nSymbol: {self.pos['sym']}")
-                self.pos = None
-                return True
-        except: pass
-        return False
-
-    async def update_dashboard(self):
-        if time.time() - self.last_update < 5: return
-        try:
-            header = f"💎 <b>Z-SCALPER v2.0</b>\n💰 Cash: ${self.cash:.2f} | PnL: ${self.pnl:+.2f}\n"
-            if self.pos:
-                tick = await self.ex.fetch_ticker(self.pos['sym'])
-                curr = tick['last']
-                perf = (curr / self.pos['entry'] - 1) * 100
-                status = f"📊 <b>HOLDING {self.pos['sym']}</b>\nProfit: {perf:+.2f}%"
-            else:
-                status = "🔍 <b>SCANNING MARKET...</b>"
-            
-            await self.tg(header + status, edit=True)
-            self.last_update = time.time()
-        except: pass
-
-    async def run(self):
-        await self.tg("🚀 <b>Z-SCORE SCALPER ONLINE</b>")
+    def run(self):
+        print("🚀 SCALPER STARTING...")
+        send_telegram("🚀 <b>BOT STARTED</b>\nAggressive Scalping Active.")
+        
         while True:
-            try:
-                if not self.pos: await self.check_entry()
-                else: await self.check_exit()
-                await self.update_dashboard()
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"Loop error: {e}")
-                await asyncio.sleep(5)
+            prices = {}
+            for sym in UltimateConfig.SYMBOLS:
+                try:
+                    ohlcv = self.exchange.fetch_ohlcv(sym, '1m', limit=30)
+                    df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                    prices[sym] = df['c'].iloc[-1]
+                    
+                    if len(self.portfolio.open_trades) < UltimateConfig.MAX_OPEN_TRADES:
+                        if sym not in [t['symbol'] for t in self.portfolio.open_trades.values()]:
+                            sig = self.get_signal(df)
+                            if sig:
+                                size = self.portfolio.balance * UltimateConfig.RISK_PER_TRADE
+                                tid = f"{sym}_{int(time.time())}"
+                                self.portfolio.open_trades[tid] = {
+                                    'symbol': sym,
+                                    'entry': prices[sym],
+                                    'size': size,
+                                    'side': sig,
+                                    'sl': UltimateConfig.BASE_STOP_LOSS,
+                                    'be': False
+                                }
+                                logging.info(f"OPENED: {sig} {sym} at {prices[sym]}")
+                                send_telegram(
+                                    f"💰 <b>OPEN: {sig} {sym}</b>\n"
+                                    f"Price: {prices[sym]}"
+                                )
+                    time.sleep(0.05)
+                except:
+                    continue
+            
+            self.portfolio.update_and_report(prices)
+            time.sleep(UltimateConfig.CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    bot = ZScalper()
-    asyncio.run(bot.run())
+    FastBot().run()
+
+    await self.tg(
+        f"⚡ <b>BUY {sym}</b>\n"
+        f"Price: ${price:.4f}\n"
+        f"Score: {score}/10\n"
+        f"Z: {r['zscore']:.2f} | RSI: {r['rsi']:.0f}\n"
+        f"TP: ${self.pos['tp']:.4f} | SL: ${self.pos['sl']:.4f}"
+    )
+    return True
+
+    return False
+
+    async def update_dashboard(self):
+        if time.time() - self.last_update < 5:
+            return
+            
+        try:
+            if self.pos:
+                tick = await self.ex.fetch_ticker(self.pos['sym'])
+                current_price = tick['last']
+                profit = (current_price / self.pos['entry'] - 1) * 100
+                held = int(time.time() - self.pos['t'])
+                
+                status = (
+                    f"📊 <b>HOLDING {self.pos['sym']}</b>\n"
+                    f"Entry: ${self.pos['entry']:.4f} | Now: ${current_price:.4f}\n"
+                    f"P/L: {profit:+.2f}% | Held: {held}s\n"
+                    f"TP: ${self.pos['tp']:.4f} | SL: ${self.pos['sl']:.4f}"
+                )
+            else:
+                status = "🔍 <b>SCANNING FOR ENTRIES</b>\n"
+            
+            await self.tg(status, edit=True)
+            self.last_update = time.time()
+        except Exception as e:
+            print(f"Dashboard error: {e}")
+
+    async def run(self):
+        await self.tg(
+            "🚀 <b>Z-SCORE SCALPER v2.0 ONLINE</b>\n"
+            "Faster trades | Improved exits | Fixed alerts"
+        )
+        while True:
+            await asyncio.sleep(1)
 
